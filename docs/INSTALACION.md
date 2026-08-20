@@ -119,6 +119,26 @@ YouTube utiliza desafíos de firma dinámica en JavaScript para restringir flujo
 
 ---
 
+## 🍪 Configuración de la Carpeta de Cookies
+
+Para descargar contenido con restricción de edad (18+), perfiles privados autorizados o evitar bloqueos por antibot:
+
+1. **Estructura de la carpeta**: Crea una carpeta llamada `cookies/` en la raíz del proyecto (o se creará automáticamente al iniciar la app).
+2. **Exportar cookies**:
+   - Usa una extensión de navegador como **Get cookies.txt LOCALLY** o **Cookie-Editor**.
+   - Inicia sesión en la red social y exporta las cookies en formato Netscape (`.txt`).
+3. **Nomenclatura recomendada dentro de `cookies/`**:
+   - `cookies/cookies.txt` (Cookie general para cualquier plataforma)
+   - `cookies/cookies_youtube.txt` (YouTube)
+   - `cookies/cookies_instagram.txt` (Instagram)
+   - `cookies/cookies_tiktok.txt` (TikTok)
+   - `cookies/cookies_twitter.txt` (Twitter / X)
+   - `cookies/cookies_twitch.txt` (Twitch)
+   - `cookies/cookies_facebook.txt` (Facebook)
+4. **Privacidad y Git**: La carpeta `cookies/` y todos los archivos `*cookies*.txt` están expresamente incluidos en `.gitignore`. Tus tokens y credenciales de sesión **nunca** se registrarán en Git ni se subirán a repositorios.
+
+---
+
 ## ✅ Verificación de la Instalación
 
 Ejecuta estos comandos en tu terminal para confirmar que todos los componentes están listos:

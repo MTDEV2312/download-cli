@@ -65,7 +65,7 @@ from ui.progress import (
 )
 
 # Core
-from core.cookies import get_cookie_opts, check_cookies_status, SUPPORTED_BROWSERS
+from core.cookies import get_cookie_opts, check_cookies_status, find_cookie_file, COOKIES_DIR, SUPPORTED_BROWSERS
 from core.extractor import (
     get_raw_info,
     get_video_info,
@@ -426,6 +426,15 @@ class TestCookies(unittest.TestCase):
             opts = get_cookie_opts(url="https://www.youtube.com/watch?v=dQw4w9WgXcQ")
             self.assertIn('cookiefile', opts)
             self.assertTrue(opts['cookiefile'].endswith('youtube_cookies.txt'))
+
+    def test_find_cookie_file(self):
+        def fake_exists(self_path):
+            return str(self_path).replace('\\', '/').endswith('cookies/cookies_instagram.txt')
+
+        with patch.object(Path, 'exists', side_effect=fake_exists, autospec=True):
+            found = find_cookie_file('cookies_instagram.txt')
+            self.assertIsNotNone(found)
+            self.assertTrue(str(found).replace('\\', '/').endswith('cookies/cookies_instagram.txt'))
 
     def test_check_cookies_status(self):
         test_console = Console(file=StringIO(), force_terminal=False)

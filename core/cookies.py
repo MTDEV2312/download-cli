@@ -1,7 +1,7 @@
 """
 Módulo de gestión, configuración y diagnóstico multi-sitio de cookies y sesiones.
 Soporta YouTube, TikTok, Instagram, Twitter/X, Twitch, Facebook, Reddit, SoundCloud, Bandcamp y más.
-Implementa búsqueda en cascada inteligente y auditoría de sesiones en navegadores.
+Implementa búsqueda en cascada inteligente en carpeta cookies/ y auditoría de sesiones en navegadores.
 """
 
 import io
@@ -23,6 +23,9 @@ from utils.platform_detector import (
     detect_platform,
     get_platform_info,
 )
+
+# Carpeta dedicada para almacenamiento seguro y ordenado de cookies locales
+COOKIES_DIR: Path = Path("cookies")
 
 # Navegadores web soportados por yt-dlp para extracción directa de cookies
 SUPPORTED_BROWSERS: List[str] = ['brave', 'chrome', 'edge', 'firefox', 'opera', 'vivaldi']
@@ -73,6 +76,27 @@ AUDIT_COOKIE_TARGETS: List[Tuple[str, str, Optional[PlatformType]]] = [
 ]
 
 
+def find_cookie_file(filename: str) -> Optional[Path]:
+    """
+    Busca un archivo de cookies con resolución inteligente:
+    1. Si es una ruta directa existente (absoluta o relativa)
+    2. Dentro de la carpeta 'cookies/' (ej. cookies/cookies_youtube.txt)
+    3. En el directorio raíz del proyecto (fallback de compatibilidad)
+    """
+    if not filename:
+        return None
+    p_direct = Path(filename)
+    if p_direct.exists():
+        return p_direct
+    p_in_cookies = COOKIES_DIR / p_direct.name
+    if p_in_cookies.exists():
+        return p_in_cookies
+    p_in_root = Path(p_direct.name)
+    if p_in_root.exists():
+        return p_in_root
+    return None
+
+
 def get_platform_cookie_files(platform: Optional[PlatformType] = None) -> List[str]:
     """Retorna la lista de nombres de archivos de cookies candidatos para una plataforma dada"""
     if platform and platform in PLATFORM_COOKIE_FILES:
@@ -92,9 +116,9 @@ def get_cookie_opts(
     Configura opciones de cookies con búsqueda en cascada inteligente multi-sitio:
     1. Archivo de cookies explícito pasado por parámetro (cookies_file o default_cookies_file)
     2. Navegador explícito pasado por parámetro (cookies_from o default_cookies_from)
-    3. Archivo específico de la plataforma en disco (ej. cookies_instagram.txt, cookies_tiktok.txt, etc.)
-    4. Archivo genérico cookies.txt en el directorio actual
-    5. Archivo legado youtube_cookies.txt (para YouTube o como fallback de compatibilidad)
+    3. Archivo específico de la plataforma en cookies/ o raíz (ej. cookies/cookies_instagram.txt)
+    4. Archivo genérico cookies/cookies.txt o cookies.txt
+    5. Archivo legado cookies/youtube_cookies.txt o youtube_cookies.txt (para YouTube o fallback)
     """
     opts: Dict[str, Any] = {}
 
@@ -106,9 +130,9 @@ def get_cookie_opts(
     # 1. Archivo de cookies explícito o por defecto
     target_file = cookies_file or default_cookies_file
     if target_file:
-        cf_path = Path(target_file)
-        if cf_path.exists():
-            opts['cookiefile'] = str(cf_path.resolve())
+        found_file = find_cookie_file(target_file)
+        if found_file:
+            opts['cookiefile'] = str(found_file.resolve())
             return opts
 
     # 2. Navegador explícito o por defecto
@@ -122,23 +146,23 @@ def get_cookie_opts(
     if target_platform is None and url:
         target_platform = get_platform_info(url).type
 
-    # 3. Archivo específico de la plataforma si existe en disco
+    # 3. Archivo específico de la plataforma si existe en disco (en cookies/ o en raíz)
     if target_platform and target_platform in PLATFORM_COOKIE_FILES:
         for filename in PLATFORM_COOKIE_FILES[target_platform]:
-            p_file = Path(filename)
-            if p_file.exists():
-                opts['cookiefile'] = str(p_file.resolve())
+            found_file = find_cookie_file(filename)
+            if found_file:
+                opts['cookiefile'] = str(found_file.resolve())
                 return opts
 
-    # 4. Archivo genérico cookies.txt en el directorio actual
-    generic_cookies = Path('cookies.txt')
-    if generic_cookies.exists():
+    # 4. Archivo genérico cookies.txt en cookies/ o directorio raíz
+    generic_cookies = find_cookie_file('cookies.txt')
+    if generic_cookies:
         opts['cookiefile'] = str(generic_cookies.resolve())
         return opts
 
     # 5. Archivo legado youtube_cookies.txt (para YouTube o como fallback)
-    legacy_cookies = Path('youtube_cookies.txt')
-    if legacy_cookies.exists():
+    legacy_cookies = find_cookie_file('youtube_cookies.txt')
+    if legacy_cookies:
         opts['cookiefile'] = str(legacy_cookies.resolve())
         return opts
 
@@ -161,14 +185,15 @@ def _count_valid_cookies_in_file(file_path: Path) -> Tuple[int, int]:
 def check_cookies_status(console_instance: Optional[Console] = None) -> None:
     """
     Comprueba y diagnostica el estado de cookies multi-plataforma:
-    - Archivos de cookies detectados en el proyecto
+    - Archivos de cookies detectados en la carpeta cookies/ y en el proyecto
     - Sesiones activas en navegadores web soportados (YouTube, TikTok, Instagram, Twitter/X, Twitch, Facebook, Reddit)
     - Recomendaciones y prevención de bloqueos antibot/login por plataforma
     """
     c = console_instance or console
+    COOKIES_DIR.mkdir(parents=True, exist_ok=True)
     c.print(Panel(
         "[bold cyan]🍪 Diagnóstico Multi-Plataforma de Cookies y Sesiones[/bold cyan]\n"
-        "[dim]Auditoría de archivos de cookies locales y sesiones de navegadores para YouTube, TikTok, Instagram, Twitter/X, Twitch y más.[/dim]",
+        "[dim]Auditoría de archivos de cookies locales (carpeta cookies/) y sesiones de navegadores para YouTube, TikTok, Instagram, Twitter/X, Twitch y más.[/dim]",
         border_style="cyan",
         expand=False
     ))
@@ -177,11 +202,11 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
     # 1. Tabla de Archivos de Cookies Locales
     # =========================================================================
     files_table = Table(
-        title="[bold green]📁 Archivos de Cookies en el Proyecto[/bold green]",
+        title="[bold green]📁 Archivos de Cookies en el Proyecto (carpeta cookies/)[/bold green]",
         header_style="bold magenta",
         border_style="green"
     )
-    files_table.add_column("Archivo", style="bold white", justify="left")
+    files_table.add_column("Archivo / Ruta", style="bold white", justify="left")
     files_table.add_column("Plataforma / Alcance", style="cyan", justify="left")
     files_table.add_column("Estado", justify="center")
     files_table.add_column("Detalles / Cookies", justify="left")
@@ -190,30 +215,36 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
 
     for filename, description, p_type in AUDIT_COOKIE_TARGETS:
         shown_filenames.add(filename.lower())
-        p_path = Path(filename)
-        if p_path.exists():
-            count, size = _count_valid_cookies_in_file(p_path)
+        found_path = find_cookie_file(filename)
+        if found_path:
+            count, size = _count_valid_cookies_in_file(found_path)
             files_table.add_row(
-                f"📁 {filename}",
+                f"📁 {found_path.as_posix()}",
                 description,
                 "[bold green]✅ Detectado y Activo[/bold green]",
                 f"{count} cookies registradas ({format_bytes(size)})"
             )
         else:
             files_table.add_row(
-                f"📁 {filename}",
+                f"📁 cookies/{filename}",
                 description,
                 "[dim]No presente[/dim]",
-                "Opcional (crea este archivo para autenticar)"
+                "Opcional (guarda en cookies/ para autenticar)"
             )
 
-    # Buscar si existen archivos adicionales con patrón cookies_*.txt o *_cookies.txt en el directorio actual
+    # Buscar si existen archivos adicionales con patrón cookies_*.txt o *_cookies.txt en cookies/ o raíz
     try:
-        for extra_file in Path('.').glob('*cookies*.txt'):
+        candidate_paths: List[Path] = []
+        if COOKIES_DIR.exists():
+            candidate_paths.extend(list(COOKIES_DIR.glob('*.txt')))
+        candidate_paths.extend(list(Path('.').glob('*cookies*.txt')))
+
+        for extra_file in candidate_paths:
             if extra_file.name.lower() not in shown_filenames and extra_file.is_file():
+                shown_filenames.add(extra_file.name.lower())
                 count, size = _count_valid_cookies_in_file(extra_file)
                 files_table.add_row(
-                    f"📁 {extra_file.name}",
+                    f"📁 {extra_file.as_posix()}",
                     "Personalizado / Detectado",
                     "[bold green]✅ Detectado[/bold green]",
                     f"{count} cookies registradas ({format_bytes(size)})"
@@ -319,20 +350,23 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
     # =========================================================================
     instrucciones = (
         "[bold cyan]📌 Cómo Exportar y Usar Cookies Multi-Plataforma:[/bold cyan]\n\n"
-        "1. [bold white]Método Recomendado (Archivo de Cookies):[/bold white]\n"
+        "1. [bold white]Método Recomendado (Carpeta cookies/):[/bold white]\n"
+        "   • Las cookies se almacenan organizadas en la carpeta [bold yellow]'cookies/'[/bold yellow] del proyecto.\n"
         "   • Instala en tu navegador la extensión [bold yellow]'Get cookies.txt LOCALLY'[/bold yellow] o [bold yellow]'Cookie-Editor'[/bold yellow].\n"
         "   • Abre la red social deseada (Instagram, Twitter, YouTube, TikTok, etc.) con tu sesión iniciada.\n"
-        "   • Exporta las cookies en formato Netscape (.txt) y guárdalas en la carpeta del proyecto como:\n"
-        "     - [bold white]cookies.txt[/bold white] (se aplicará como cookie universal a cualquier plataforma)\n"
-        "     - [bold white]cookies_instagram.txt[/bold white] (específico para Instagram)\n"
-        "     - [bold white]cookies_tiktok.txt[/bold white] (específico para TikTok)\n"
-        "     - [bold white]cookies_twitter.txt[/bold white] (específico para Twitter / X)\n"
-        "     - [bold white]cookies_youtube.txt[/bold white] o [bold white]youtube_cookies.txt[/bold white] (específico para YouTube)\n"
+        "   • Exporta las cookies en formato Netscape (.txt) y guárdalas dentro de [bold yellow]'cookies/'[/bold yellow] como:\n"
+        "     - [bold white]cookies/cookies.txt[/bold white] (se aplicará como cookie universal a cualquier plataforma)\n"
+        "     - [bold white]cookies/cookies_instagram.txt[/bold white] (específico para Instagram)\n"
+        "     - [bold white]cookies/cookies_tiktok.txt[/bold white] (específico para TikTok)\n"
+        "     - [bold white]cookies/cookies_twitter.txt[/bold white] (específico para Twitter / X)\n"
+        "     - [bold white]cookies/cookies_youtube.txt[/bold white] o [bold white]cookies/youtube_cookies.txt[/bold white] (específico para YouTube)\n"
+        "     - [bold white]cookies/cookies_twitch.txt[/bold white] (específico para Twitch)\n"
+        "     - [bold white]cookies/cookies_facebook.txt[/bold white] (específico para Facebook)\n"
         "   • El programa las detectará y aplicará automáticamente según la URL a descargar.\n\n"
         "2. [bold white]Método Directo por Navegador (CLI):[/bold white]\n"
         "   • [green]python youtube_downloader.py download \"URL\" --cookies-from firefox[/green]\n"
         "   • [green]python youtube_downloader.py download \"URL\" --cookies-from brave[/green]\n\n"
         "3. [bold white]Método Archivo Explícito (CLI):[/bold white]\n"
-        "   • [green]python youtube_downloader.py download \"URL\" --cookies-file mis_cookies.txt[/green]"
+        "   • [green]python youtube_downloader.py download \"URL\" --cookies-file cookies/mis_cookies.txt[/green]"
     )
     c.print(Panel(instrucciones, title="[bold cyan]📖 Guía de Uso de Cookies[/bold cyan]", border_style="cyan", expand=False))

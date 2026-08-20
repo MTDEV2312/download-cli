@@ -90,7 +90,7 @@ def handle_download_error(e: Exception, context_url: str = "", console_instance:
             "Los navegadores basados en Chromium (Chrome, Edge, Brave, Opera) bloquean el descifrado directo de cookies cuando están en ejecución o debido a restricciones del sistema.\n\n"
             "💡 [bold cyan]Soluciones recomendadas:[/bold cyan]\n"
             "  1. Cierra el navegador antes de iniciar la descarga, o usa Firefox: [bold white]--cookies-from firefox[/bold white]\n"
-            "  2. Exporta tus cookies con la extensión [bold white]'Get cookies.txt LOCALLY'[/bold white] y guárdalas como [bold white]cookies.txt[/bold white] o [bold white]cookies_[plataforma].txt[/bold white].\n"
+            "  2. Exporta tus cookies con la extensión [bold white]'Get cookies.txt LOCALLY'[/bold white] y guárdalas dentro de la carpeta [bold white]cookies/[/bold white] (ej. [bold white]cookies/cookies.txt[/bold white] o [bold white]cookies/cookies_[plataforma].txt[/bold white]).\n"
             "  3. Ejecuta [bold white]python youtube_downloader.py cookies[/bold white] para diagnosticar sesiones disponibles.",
             console_instance=c
         )

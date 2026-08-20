@@ -77,6 +77,8 @@ class UniversalDownloader:
         self.output_path.mkdir(parents=True, exist_ok=True)
         self.videos_path.mkdir(parents=True, exist_ok=True)
         self.audios_path.mkdir(parents=True, exist_ok=True)
+        self.cookies_path = Path("cookies")
+        self.cookies_path.mkdir(parents=True, exist_ok=True)
 
         # Detectar runtimes de JavaScript disponibles (formato dict esperado por yt-dlp)
         self.js_runtimes: Dict[str, Any] = {}

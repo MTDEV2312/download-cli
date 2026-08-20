@@ -144,11 +144,21 @@ python youtube_downloader.py download "URL" --cookies-from firefox
 
 Para acceder a videos restringidos por edad, publicaciones privadas autorizadas o contenido exclusivo:
 
-1. **Desde Navegadores**: Usa `--cookies-from <navegador>` (`brave`, `chrome`, `edge`, `firefox`, `opera`).
-2. **Archivos de Cookies**:
-   - `cookies_[plataforma].txt` (ej. `cookies_instagram.txt`, `cookies_tiktok.txt`, `cookies_twitter.txt`, `cookies_twitch.txt`).
-   - `cookies.txt` (archivo general estándar Netscape).
-   - `youtube_cookies.txt` (histórico de YouTube).
+1. **Carpeta Dedicada `cookies/` (Recomendado)**:
+   - Las cookies se almacenan de forma organizada dentro de la carpeta `cookies/` en la raíz del proyecto (creada automáticamente y protegida en `.gitignore` para no exponer credenciales).
+   - Exporta tus cookies en formato Netscape (`.txt`) con extensiones como *Get cookies.txt LOCALLY* o *Cookie-Editor* y colócalas en `cookies/`:
+     - `cookies/cookies.txt` (Universal para cualquier plataforma)
+     - `cookies/cookies_youtube.txt` (YouTube)
+     - `cookies/cookies_instagram.txt` (Instagram)
+     - `cookies/cookies_tiktok.txt` (TikTok)
+     - `cookies/cookies_twitter.txt` (Twitter / X)
+     - `cookies/cookies_twitch.txt` (Twitch)
+     - `cookies/cookies_facebook.txt` (Facebook)
+   - El sistema detecta y aplica automáticamente las cookies correspondientes según el dominio del enlace a descargar.
+
+2. **Extracción Directa desde Navegadores**:
+   - Usa `--cookies-from <navegador>` (`brave`, `chrome`, `edge`, `firefox`, `opera`).
+   - Ejemplo: `python youtube_downloader.py download "URL" --cookies-from firefox`
 
 ---
 
@@ -164,6 +174,11 @@ dowloaderVid/
 ├── requirements.txt           # Dependencias de Python
 ├── README.md                  # Documentación principal del repositorio
 ├── .gitignore                 # Exclusiones de Git (cookies, descargas, venv)
+│
+├── cookies/                   # Carpeta de cookies Netscape (ignorado por Git / Seguro)
+│   ├── cookies.txt            # Cookie universal opcional
+│   ├── cookies_youtube.txt    # Cookie para YouTube
+│   └── cookies_[red].txt      # Cookies por plataforma (Instagram, TikTok, Twitch, etc.)
 │
 ├── docs/                      # Documentación y guías técnicas
 │   ├── INICIO_RAPIDO.md       # Guía de inicio rápido y ejemplos

@@ -88,3 +88,26 @@ python youtube_downloader.py download "https://servidor.com/live/stream.m3u8"
 ```bash
 python youtube_downloader.py batch examples/urls_ejemplo.txt --concurrency 3 --delay 1.0 --organize-by-platform
 ```
+
+---
+
+## 🍪 Configuración y Organización de Cookies
+
+Para contenido restringido, privado o con verificación anti-bot:
+
+1. **Ubicación de archivos**: Guarda tus archivos Netscape `.txt` en la carpeta `cookies/` de la raíz del proyecto.
+   - `cookies/cookies.txt` — Universal
+   - `cookies/cookies_youtube.txt` — YouTube (edad 18+, miembros)
+   - `cookies/cookies_instagram.txt` — Instagram (Stories, reels privados)
+   - `cookies/cookies_tiktok.txt` — TikTok
+   - `cookies/cookies_twitter.txt` — Twitter / X
+   - `cookies/cookies_twitch.txt` — Twitch (sub-only)
+   - `cookies/cookies_facebook.txt` — Facebook
+
+2. **Seguridad**: La carpeta `cookies/` está ignorada en `.gitignore` para garantizar que tus credenciales nunca se suban a Git.
+
+3. **Diagnóstico**:
+   ```bash
+   python youtube_downloader.py cookies
+   ```
+
