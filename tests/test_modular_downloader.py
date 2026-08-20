@@ -317,6 +317,18 @@ class TestUniversalProgressClassification(unittest.TestCase):
         self.assertIn("subtítulos", get_postprocessor_label("EmbedSubtitle").lower())
         self.assertIn("metadatos", get_postprocessor_label("FFmpegMetadata").lower())
 
+    def test_classify_stream_label_responsive_truncation(self):
+        c_narrow = Console(width=50, file=StringIO(), force_terminal=False)
+        c_wide = Console(width=120, file=StringIO(), force_terminal=False)
+        long_title = "A" * 60
+
+        label_narrow = classify_stream_label(f"{long_title}.mp4", console_instance=c_narrow)
+        label_wide = classify_stream_label(f"{long_title}.mp4", console_instance=c_wide)
+
+        self.assertLess(len(label_narrow), len(label_wide))
+        self.assertTrue(label_narrow.endswith("..."))
+        self.assertTrue(label_wide.endswith("..."))
+
 
 class TestProgressManagers(unittest.TestCase):
     def test_quiet_logger(self):
@@ -351,6 +363,98 @@ class TestProgressManagers(unittest.TestCase):
         pp_hook({'status': 'started', 'postprocessor': 'ExtractAudio'})
         prog_hook({'status': 'finished', 'total_bytes': 1000})
         cleanup()
+
+    def test_progress_columns_no_wrap(self):
+        """Verifica que todas las columnas de progreso tengan no_wrap=True para evitar desincronización por resize"""
+        dp = RichDownloadProgress()
+        for col in dp.progress.columns:
+            tc = getattr(col, 'table_column', None) or getattr(col, '_table_column', None) or (col.get_table_column() if hasattr(col, 'get_table_column') else None)
+            self.assertIsNotNone(tc, f"Columna {col} no tiene table_column definido")
+            self.assertTrue(tc.no_wrap, f"Columna {col} no tiene no_wrap=True")
+
+        pp = RichPlaylistProgress()
+        for col in pp.overall_progress.columns:
+            tc = getattr(col, 'table_column', None) or getattr(col, '_table_column', None) or (col.get_table_column() if hasattr(col, 'get_table_column') else None)
+            self.assertIsNotNone(tc, f"Columna {col} en overall_progress no tiene table_column")
+            self.assertTrue(tc.no_wrap, f"Columna {col} en overall_progress no tiene no_wrap=True")
+        for col in pp.file_progress.columns:
+            tc = getattr(col, 'table_column', None) or getattr(col, '_table_column', None) or (col.get_table_column() if hasattr(col, 'get_table_column') else None)
+            self.assertIsNotNone(tc, f"Columna {col} en file_progress no tiene table_column")
+            self.assertTrue(tc.no_wrap, f"Columna {col} en file_progress no tiene no_wrap=True")
+
+        bp = RichConcurrentBatchProgress()
+        for col in bp.progress.columns:
+            tc = getattr(col, 'table_column', None) or getattr(col, '_table_column', None) or (col.get_table_column() if hasattr(col, 'get_table_column') else None)
+            self.assertIsNotNone(tc, f"Columna {col} en batch progress no tiene table_column")
+            self.assertTrue(tc.no_wrap, f"Columna {col} en batch progress no tiene no_wrap=True")
+
+    def test_download_progress_throttling(self):
+        """Verifica que las actualizaciones de alta frecuencia se limiten y que los eventos finales pasen de inmediato"""
+        test_console = Console(file=StringIO(), force_terminal=False)
+        mgr = RichDownloadProgress(console_instance=test_console, min_update_interval=0.1)
+
+        with patch.object(mgr.progress, 'update') as mock_update, \
+             patch.object(mgr.progress, 'add_task', return_value=1) as mock_add:
+            # 1. Primera llamada: se añade tarea inmediatamente
+            mgr.hook({'status': 'downloading', 'filename': 'vid.mp4', 'total_bytes': 1000, 'downloaded_bytes': 100})
+            self.assertEqual(mock_add.call_count, 1)
+
+            # 2. Llamada casi inmediata (< 0.1s): debe descartarse (throttled)
+            mgr.hook({'status': 'downloading', 'filename': 'vid.mp4', 'total_bytes': 1000, 'downloaded_bytes': 200})
+            self.assertEqual(mock_update.call_count, 0)
+
+            # 3. Llamada con 100% completado: debe procesarse sin importar throttling
+            mgr.hook({'status': 'downloading', 'filename': 'vid.mp4', 'total_bytes': 1000, 'downloaded_bytes': 1000})
+            self.assertEqual(mock_update.call_count, 1)
+
+            # 4. Evento finished: debe despacharse de inmediato
+            mgr.hook({'status': 'finished', 'total_bytes': 1000})
+            self.assertEqual(mock_update.call_count, 2)
+
+    def test_batch_progress_throttling_per_worker(self):
+        """Verifica que el throttling en descargas concurrentes funcione de manera independiente por worker"""
+        test_console = Console(file=StringIO(), force_terminal=False)
+        mgr = RichConcurrentBatchProgress(console_instance=test_console, min_update_interval=0.1)
+
+        prog_hook1, _, cleanup1 = mgr.create_hooks_for_item(1, 2, worker_id=1)
+        prog_hook2, _, cleanup2 = mgr.create_hooks_for_item(2, 2, worker_id=2)
+
+        with patch.object(mgr.progress, 'update') as mock_update, \
+             patch.object(mgr.progress, 'add_task', side_effect=[1, 2]) as mock_add, \
+             patch.object(mgr.progress, 'remove_task') as mock_remove:
+            # Primer evento para worker 1 y worker 2 -> ambos deben añadir tarea
+            prog_hook1({'status': 'downloading', 'filename': 'w1.mp4', 'total_bytes': 1000, 'downloaded_bytes': 100})
+            prog_hook2({'status': 'downloading', 'filename': 'w2.mp4', 'total_bytes': 2000, 'downloaded_bytes': 200})
+            self.assertEqual(mock_add.call_count, 2)
+
+            # Actualizaciones rápidas subsiguientes -> throttled
+            prog_hook1({'status': 'downloading', 'filename': 'w1.mp4', 'total_bytes': 1000, 'downloaded_bytes': 150})
+            prog_hook2({'status': 'downloading', 'filename': 'w2.mp4', 'total_bytes': 2000, 'downloaded_bytes': 250})
+            self.assertEqual(mock_update.call_count, 0)
+
+            # Finalizaciones inmediatas
+            prog_hook1({'status': 'finished', 'total_bytes': 1000})
+            prog_hook2({'status': 'finished', 'total_bytes': 2000})
+            self.assertEqual(mock_update.call_count, 2)
+
+            cleanup1()
+            cleanup2()
+            self.assertEqual(mock_remove.call_count, 2)
+
+    def test_terminal_resize_detection(self):
+        """Verifica que el cambio de dimensiones de consola active el refresco limpio"""
+        mock_console = MagicMock()
+        mock_console.width = 80
+        mock_console.height = 24
+        mgr = RichDownloadProgress(console_instance=mock_console)
+
+        self.assertFalse(mgr._check_resize())
+        mock_console.width = 120
+        mock_console.height = 30
+        self.assertTrue(mgr._check_resize())
+        self.assertEqual(mgr._last_size, (120, 30))
+        # Segunda llamada consecutiva sin cambios retorna False
+        self.assertFalse(mgr._check_resize())
 
 
 class TestCookies(unittest.TestCase):

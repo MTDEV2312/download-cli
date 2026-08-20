@@ -4,10 +4,12 @@ Soporte universal para streams de video, audio, subtítulos y manifiestos HLS/DA
 """
 
 import re
+import time
 import threading
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from rich.console import Console, Group
+from rich.table import Column
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -57,14 +59,34 @@ def classify_stream_label(
     filename: str,
     info_dict: Optional[Dict[str, Any]] = None,
     prefix: str = "",
-    max_title_len: int = 28
+    max_title_len: int = 28,
+    console_instance: Optional[Console] = None
 ) -> str:
     """
     Clasifica de manera universal el tipo de stream que se está descargando
     (Audio, Video, Subtítulo o Stream HLS/DASH/Fragmentos) sin acoplamiento a itags de YouTube.
+    Ajusta dinámicamente la longitud máxima del título según el ancho de la consola para evitar desbordamiento.
     """
+    c = console_instance or console
+    term_width = getattr(c, 'width', 80) or 80
+
+    # Cálculo responsivo de longitud máxima de título según ancho de consola
+    effective_max_len = max_title_len
+    if term_width < 70:
+        available = max(8, term_width - 32 - len(prefix))
+        effective_max_len = min(max_title_len, available)
+    elif term_width < 90:
+        available = max(12, term_width - 42 - len(prefix))
+        effective_max_len = min(max_title_len, available)
+    elif term_width < 110:
+        available = max(16, term_width - 50 - len(prefix))
+        effective_max_len = min(max_title_len, available)
+
     title = clean_stream_title(filename, info_dict)
-    short_title = title if len(title) <= max_title_len else title[:max_title_len - 3] + "..."
+    if len(title) > effective_max_len:
+        short_title = title[:max(1, effective_max_len - 3)] + "..."
+    else:
+        short_title = title
 
     file_name = Path(filename).name.lower()
     ext = Path(filename).suffix.lower()
@@ -135,31 +157,58 @@ def get_postprocessor_label(pp: str, prefix: str = "") -> str:
 
 class RichDownloadProgress:
     """Gestor de progreso de descarga individual con Rich"""
-    def __init__(self, console_instance: Console = console):
+    def __init__(self, console_instance: Console = console, min_update_interval: float = 0.05):
         self.console = console_instance
+        self.min_update_interval = min_update_interval
+        self._last_update_time: float = 0.0
+        self._last_size: Tuple[int, int] = (self.console.width, self.console.height)
         self.progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.fields[filename]}", justify="left"),
-            BarColumn(bar_width=None),
-            "[progress.percentage]{task.percentage:>3.1f}%",
-            DownloadColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn(),
+            SpinnerColumn(table_column=Column(no_wrap=True, overflow="crop")),
+            TextColumn("[bold blue]{task.fields[filename]}", justify="left", table_column=Column(no_wrap=True, overflow="ellipsis")),
+            BarColumn(bar_width=None, table_column=Column(ratio=1, no_wrap=True, overflow="crop")),
+            TextColumn("[progress.percentage]{task.percentage:>3.1f}%", table_column=Column(no_wrap=True, overflow="crop")),
+            DownloadColumn(table_column=Column(no_wrap=True, overflow="crop")),
+            TransferSpeedColumn(table_column=Column(no_wrap=True, overflow="crop")),
+            TimeRemainingColumn(table_column=Column(no_wrap=True, overflow="crop")),
             console=self.console,
             transient=False,
         )
         self.stream_task_id = None
         self.current_filename = None
 
+    def _check_resize(self) -> bool:
+        """Detecta cambios de dimensiones en la terminal y fuerza un refresco limpio."""
+        try:
+            current_size = (self.console.width, self.console.height)
+            if current_size != self._last_size:
+                self._last_size = current_size
+                self.progress.refresh()
+                return True
+        except Exception:
+            pass
+        return False
+
     def hook(self, d: Dict[str, Any]):
         status = d.get('status')
+        resized = self._check_resize()
+
         if status == 'downloading':
             filename = d.get('filename', '')
             info_dict = d.get('info_dict', {})
-            stream_name = classify_stream_label(filename, info_dict=info_dict, max_title_len=28)
-
             total = d.get('total_bytes') or d.get('total_bytes_estimate')
             downloaded = d.get('downloaded_bytes', 0)
+
+            is_complete = (total is not None and downloaded is not None and total > 0 and downloaded >= total)
+            is_first_update = (self.stream_task_id is None or self.current_filename != filename)
+            now = time.time()
+
+            # Throttling: evitar flood al terminal salvo primer evento, finalización, o cambio de tamaño
+            if not is_first_update and not is_complete and not resized:
+                if (now - self._last_update_time) < self.min_update_interval:
+                    return
+
+            self._last_update_time = now
+            stream_name = classify_stream_label(filename, info_dict=info_dict, max_title_len=28, console_instance=self.console)
 
             if self.stream_task_id is None:
                 self.stream_task_id = self.progress.add_task(
@@ -186,6 +235,7 @@ class RichDownloadProgress:
                 )
 
         elif status == 'finished':
+            self._last_update_time = time.time()
             if self.stream_task_id is not None:
                 total = d.get('total_bytes') or d.get('downloaded_bytes')
                 if total:
@@ -205,24 +255,27 @@ class RichDownloadProgress:
 
 class RichPlaylistProgress:
     """Gestor de progreso de doble barra para listas de reproducción"""
-    def __init__(self, console_instance: Console = console):
+    def __init__(self, console_instance: Console = console, min_update_interval: float = 0.05):
         self.console = console_instance
+        self.min_update_interval = min_update_interval
+        self._last_update_time: float = 0.0
+        self._last_size: Tuple[int, int] = (self.console.width, self.console.height)
         self.overall_progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[bold magenta]{task.fields[filename]}"),
-            BarColumn(bar_width=None),
-            "[progress.percentage]{task.percentage:>3.1f}%",
-            TextColumn("[dim]({task.completed}/{task.total} completados)[/dim]"),
+            SpinnerColumn(table_column=Column(no_wrap=True, overflow="crop")),
+            TextColumn("[bold magenta]{task.fields[filename]}", table_column=Column(no_wrap=True, overflow="ellipsis")),
+            BarColumn(bar_width=None, table_column=Column(ratio=1, no_wrap=True, overflow="crop")),
+            TextColumn("[progress.percentage]{task.percentage:>3.1f}%", table_column=Column(no_wrap=True, overflow="crop")),
+            TextColumn("[dim]({task.completed}/{task.total} completados)[/dim]", table_column=Column(no_wrap=True, overflow="crop")),
             console=self.console,
         )
         self.file_progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.fields[filename]}", justify="left"),
-            BarColumn(bar_width=None),
-            "[progress.percentage]{task.percentage:>3.1f}%",
-            DownloadColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn(),
+            SpinnerColumn(table_column=Column(no_wrap=True, overflow="crop")),
+            TextColumn("[bold blue]{task.fields[filename]}", justify="left", table_column=Column(no_wrap=True, overflow="ellipsis")),
+            BarColumn(bar_width=None, table_column=Column(ratio=1, no_wrap=True, overflow="crop")),
+            TextColumn("[progress.percentage]{task.percentage:>3.1f}%", table_column=Column(no_wrap=True, overflow="crop")),
+            DownloadColumn(table_column=Column(no_wrap=True, overflow="crop")),
+            TransferSpeedColumn(table_column=Column(no_wrap=True, overflow="crop")),
+            TimeRemainingColumn(table_column=Column(no_wrap=True, overflow="crop")),
             console=self.console,
         )
         self.group = Group(self.overall_progress, self.file_progress)
@@ -232,6 +285,19 @@ class RichPlaylistProgress:
         self.current_index = 0
         self.total_count = 0
         self.title_prefix = "Playlist"
+
+    def _check_resize(self) -> bool:
+        """Detecta cambios de dimensiones en la terminal y fuerza un refresco limpio."""
+        try:
+            current_size = (self.console.width, self.console.height)
+            if current_size != self._last_size:
+                self._last_size = current_size
+                self.overall_progress.refresh()
+                self.file_progress.refresh()
+                return True
+        except Exception:
+            pass
+        return False
 
     def setup(self, total_items: int, title: str = "Playlist"):
         self.total_count = total_items
@@ -260,15 +326,27 @@ class RichPlaylistProgress:
 
     def hook(self, d: Dict[str, Any]):
         status = d.get('status')
+        resized = self._check_resize()
+
         if status == 'downloading':
             filename = d.get('filename', '')
             info_dict = d.get('info_dict', {})
-            p_idx = info_dict.get('playlist_index') or self.current_index or '?'
-            prefix = f"[{p_idx}/{self.total_count}] "
-            stream_name = classify_stream_label(filename, info_dict=info_dict, prefix=prefix, max_title_len=20)
-
             total = d.get('total_bytes') or d.get('total_bytes_estimate')
             downloaded = d.get('downloaded_bytes', 0)
+
+            is_complete = (total is not None and downloaded is not None and total > 0 and downloaded >= total)
+            is_first_update = (self.file_task_id is None or self.current_filename != filename)
+            now = time.time()
+
+            # Throttling
+            if not is_first_update and not is_complete and not resized:
+                if (now - self._last_update_time) < self.min_update_interval:
+                    return
+
+            self._last_update_time = now
+            p_idx = info_dict.get('playlist_index') or self.current_index or '?'
+            prefix = f"[{p_idx}/{self.total_count}] "
+            stream_name = classify_stream_label(filename, info_dict=info_dict, prefix=prefix, max_title_len=20, console_instance=self.console)
 
             if self.file_task_id is None:
                 self.file_task_id = self.file_progress.add_task(
@@ -295,6 +373,7 @@ class RichPlaylistProgress:
                 )
 
         elif status == 'finished':
+            self._last_update_time = time.time()
             if self.file_task_id is not None:
                 total = d.get('total_bytes') or d.get('downloaded_bytes')
                 if total:
@@ -314,22 +393,36 @@ class RichConcurrentBatchProgress:
     Gestor de progreso multihilo para descargas en lote (batch) concurrentes con Rich.
     Muestra una barra superior con el progreso global y barras activas para cada worker simultáneo.
     """
-    def __init__(self, console_instance: Console = console):
+    def __init__(self, console_instance: Console = console, min_update_interval: float = 0.05):
         self.console = console_instance
+        self.min_update_interval = min_update_interval
+        self._last_size: Tuple[int, int] = (self.console.width, self.console.height)
         self.lock = threading.RLock()
         self.progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.fields[filename]}", justify="left"),
-            BarColumn(bar_width=None),
-            "[progress.percentage]{task.percentage:>3.1f}%",
-            DownloadColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn(),
+            SpinnerColumn(table_column=Column(no_wrap=True, overflow="crop")),
+            TextColumn("[bold blue]{task.fields[filename]}", justify="left", table_column=Column(no_wrap=True, overflow="ellipsis")),
+            BarColumn(bar_width=None, table_column=Column(ratio=1, no_wrap=True, overflow="crop")),
+            TextColumn("[progress.percentage]{task.percentage:>3.1f}%", table_column=Column(no_wrap=True, overflow="crop")),
+            DownloadColumn(table_column=Column(no_wrap=True, overflow="crop")),
+            TransferSpeedColumn(table_column=Column(no_wrap=True, overflow="crop")),
+            TimeRemainingColumn(table_column=Column(no_wrap=True, overflow="crop")),
             console=self.console,
             transient=False,
         )
         self.overall_task_id: Optional[int] = None
         self.total_items = 0
+
+    def _check_resize(self) -> bool:
+        """Detecta cambios de dimensiones en la terminal y fuerza un refresco limpio."""
+        try:
+            current_size = (self.console.width, self.console.height)
+            if current_size != self._last_size:
+                self._last_size = current_size
+                self.progress.refresh()
+                return True
+        except Exception:
+            pass
+        return False
 
     def setup(self, total_items: int, title: str = "Descargas en Lote"):
         with self.lock:
@@ -355,17 +448,30 @@ class RichConcurrentBatchProgress:
         Retorna (progress_hook, postprocessor_hook, cleanup_callback) para una descarga en un hilo de trabajo.
         """
         task_id_box = [None]
+        last_update_time = [0.0]
 
         def progress_hook(d: Dict[str, Any]):
             status = d.get('status')
+            resized = self._check_resize()
+
             if status == 'downloading':
                 filename = d.get('filename', '')
                 info_dict = d.get('info_dict', {})
-                prefix = f"[W{worker_id}] [{item_idx}/{total_items}] "
-                stream_name = classify_stream_label(filename, info_dict=info_dict, prefix=prefix, max_title_len=22)
-
                 total = d.get('total_bytes') or d.get('total_bytes_estimate')
                 downloaded = d.get('downloaded_bytes', 0)
+
+                is_complete = (total is not None and downloaded is not None and total > 0 and downloaded >= total)
+                is_first_update = (task_id_box[0] is None)
+                now = time.time()
+
+                # Throttling por tarea / worker
+                if not is_first_update and not is_complete and not resized:
+                    if (now - last_update_time[0]) < self.min_update_interval:
+                        return
+
+                last_update_time[0] = now
+                prefix = f"[W{worker_id}] [{item_idx}/{total_items}] "
+                stream_name = classify_stream_label(filename, info_dict=info_dict, prefix=prefix, max_title_len=22, console_instance=self.console)
 
                 with self.lock:
                     if task_id_box[0] is None:
@@ -383,6 +489,7 @@ class RichConcurrentBatchProgress:
                             filename=stream_name
                         )
             elif status == 'finished':
+                last_update_time[0] = time.time()
                 with self.lock:
                     if task_id_box[0] is not None:
                         total = d.get('total_bytes') or d.get('downloaded_bytes')
@@ -406,7 +513,10 @@ class RichConcurrentBatchProgress:
         def cleanup():
             with self.lock:
                 if task_id_box[0] is not None:
-                    self.progress.remove_task(task_id_box[0])
+                    try:
+                        self.progress.remove_task(task_id_box[0])
+                    except (KeyError, ValueError):
+                        pass
                     task_id_box[0] = None
 
         return progress_hook, postprocessor_hook, cleanup

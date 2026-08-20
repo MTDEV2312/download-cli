@@ -598,7 +598,7 @@ class UniversalDownloader:
                         })
             
             try:
-                with Live(playlist_progress.group, console=self.console, refresh_per_second=10):
+                with Live(playlist_progress.group, console=self.console, refresh_per_second=10, vertical_overflow="crop", transient=False):
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
             except Exception as e:
