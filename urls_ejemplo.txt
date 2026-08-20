@@ -1,0 +1,17 @@
+# Archivo de ejemplo para descargas en lote
+# Edita este archivo y reemplaza las URLs con las que quieras descargar
+# Las líneas que comienzan con # son comentarios y se ignoran
+
+# Ejemplo de URL:
+https://www.youtube.com/watch?v=dQw4w9WgXcQ
+
+# Agregar más URLs en nuevas líneas:
+# https://www.youtube.com/watch?v=...
+# https://www.youtube.com/watch?v=...
+# https://www.youtube.com/watch?v=...
+
+# Instrucciones de uso:
+# 1. Edita este archivo y reemplaza los ejemplos con tus URLs
+# 2. Guarda el archivo
+# 3. Ejecuta: python youtube_downloader.py batch urls_ejemplo.txt
+# 4. O con opciones: python youtube_downloader.py batch urls_ejemplo.txt --quality 1080
