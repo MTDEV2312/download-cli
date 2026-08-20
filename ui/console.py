@@ -173,7 +173,7 @@ def handle_download_error(e: Exception, context_url: str = "", console_instance:
             "YouTube requiere verificación de sesión, resolución JS poToken o detectó tráfico automatizado.\n\n"
             "💡 [bold cyan]Soluciones recomendadas:[/bold cyan]\n"
             "  1. Usa cookies de tu navegador: [bold white]--cookies-from firefox[/bold white] (o brave, edge, chrome)\n"
-            "  2. O exporta tu sesión a [bold white]youtube_cookies.txt[/bold white] o [bold white]cookies.txt[/bold white].\n"
+            "  2. O exporta tu sesión a [bold white]cookies_youtube.txt[/bold white] o [bold white]cookies.txt[/bold white] (en la carpeta [bold white]cookies/[/bold white]).\n"
             "  3. Asegúrate de tener Deno o Node.js instalado ([bold white]winget install DenoLand.Deno[/bold white]).\n"
             "  4. Actualiza yt-dlp: [bold white]pip install --upgrade yt-dlp[/bold white]",
             console_instance=c

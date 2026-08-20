@@ -66,7 +66,6 @@ PLATFORM_COOKIE_FILES: Dict[PlatformType, List[str]] = {
 AUDIT_COOKIE_TARGETS: List[Tuple[str, str, Optional[PlatformType]]] = [
     ("cookies.txt", "🌐 Universal (yt-dlp estándar)", None),
     ("cookies_youtube.txt", "🔴 YouTube", PlatformType.YOUTUBE),
-    ("youtube_cookies.txt", "🔴 YouTube (Legado)", PlatformType.YOUTUBE),
     ("cookies_instagram.txt", "📸 Instagram", PlatformType.INSTAGRAM),
     ("cookies_tiktok.txt", "🎵 TikTok", PlatformType.TIKTOK),
     ("cookies_twitter.txt", "🐦 Twitter / X", PlatformType.TWITTER),

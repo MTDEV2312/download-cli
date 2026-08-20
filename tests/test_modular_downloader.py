@@ -201,7 +201,7 @@ class TestConsoleUIAndErrorHandling(unittest.TestCase):
         handle_download_error(err, context_url="https://www.youtube.com/watch?v=123", console_instance=self.test_console)
         output = self.test_console.file.getvalue()
         self.assertIn("YouTube", output)
-        self.assertIn("youtube_cookies.txt", output)
+        self.assertIn("cookies_youtube.txt", output)
         self.assertIn("Deno", output)
 
     def test_handle_download_error_direct_stream(self):
