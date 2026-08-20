@@ -5,7 +5,7 @@ setlocal enabledelayedexpansion
 REM Fijar el directorio de trabajo a la carpeta del script
 cd /d "%~dp0"
 
-title Universal Video & Audio Downloader CLI
+title Universal Video and Audio Downloader CLI
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 
@@ -19,9 +19,11 @@ echo ========================================================
 echo.
 
 set "PYTHON_EXE="
-where.exe python >nul 2>&1 && set "PYTHON_EXE=python"
+where.exe python >nul 2>&1
+if not errorlevel 1 set "PYTHON_EXE=python"
 if "%PYTHON_EXE%"=="" (
-    where.exe py >nul 2>&1 && set "PYTHON_EXE=py"
+    where.exe py >nul 2>&1
+    if not errorlevel 1 set "PYTHON_EXE=py"
 )
 
 if "%PYTHON_EXE%"=="" (
@@ -61,18 +63,18 @@ set PY_BIN="%~dp0venv\Scripts\python.exe"
 :menu
 cls
 echo ========================================================
-echo      🌐 Universal Video & Audio Downloader CLI
-echo       YouTube • TikTok • Instagram • Twitter • Twitch
-echo      SoundCloud • Bandcamp • Vimeo • HLS/DASH (1800+)
+echo        Universal Video and Audio Downloader CLI
+echo      YouTube - TikTok - Instagram - Twitter - Twitch
+echo      SoundCloud - Bandcamp - Vimeo - HLS/DASH (1800+)
 echo ========================================================
 echo.
 echo 1.  Descargar Video Universal (YouTube, TikTok, Instagram, Twitter/X, Twitch, etc.)
-echo 2.  Descargar Audio de Alta Fidelidad (MP3, FLAC, M4A, OPUS, WAV - YouTube, SoundCloud, Bandcamp, etc.)
+echo 2.  Descargar Audio de Alta Fidelidad (MP3, FLAC, M4A, OPUS, WAV)
 echo 3.  Selector Interactivo de Formatos y Resoluciones (-i)
-echo 4.  Descargar Lista de Reproducción, Perfil o Álbum
+echo 4.  Descargar Lista de Reproduccion, Perfil o Album
 echo 5.  Descarga en Lote Concurrente desde Archivo TXT (Batch)
-echo 6.  Ver Información y Formatos de una URL (Info)
-echo 7.  Diagnóstico de Cookies y Sesiones de Navegadores
+echo 6.  Ver Informacion y Formatos de una URL (Info)
+echo 7.  Diagnostico de Cookies y Sesiones de Navegadores
 echo 8.  Instalar / Verificar FFmpeg
 echo 9.  Actualizar yt-dlp y Dependencias
 echo 0.  Salir
@@ -225,12 +227,12 @@ goto menu
 :dl_playlist
 echo.
 echo ========================================================
-echo   4. Descargar Lista de Reproducción, Perfil o Álbum
+echo   4. Descargar Lista de Reproduccion, Perfil o Album
 echo ========================================================
 echo [Soporta: YouTube Playlists/Canales, SoundCloud Sets, Bandcamp Albums, TikTok Profiles, Twitch VODs]
 echo [Tip: Si dejas la URL en blanco o pulsas Enter, se usara el Portapapeles si contiene un enlace]
 set "url="
-set /p url="Introduce la URL de la lista, perfil o álbum: "
+set /p url="Introduce la URL de la lista, perfil o album: "
 echo.
 echo Tipo de descarga:
 echo [1] Video (Maxima Calidad / 1080p)
@@ -333,7 +335,7 @@ goto menu
 :info_video
 echo.
 echo ========================================================
-echo   6. Ver Información y Formatos de una URL
+echo   6. Ver Informacion y Formatos de una URL
 echo ========================================================
 echo [Tip: Si dejas la URL en blanco o pulsas Enter, se usara el Portapapeles si contiene un enlace]
 set "url="
@@ -351,7 +353,7 @@ goto menu
 :cookies_menu
 echo.
 echo ========================================================
-echo   7. Diagnóstico de Cookies y Sesiones de Navegadores
+echo   7. Diagnostico de Cookies y Sesiones de Navegadores
 echo ========================================================
 %PY_BIN% youtube_downloader.py cookies
 echo.
@@ -406,7 +408,6 @@ if not errorlevel 1 (
             echo [ERROR] Fallo la instalacion con winget.
             echo Puedes ejecutar manualmente scripts\instalar_ffmpeg.bat o instalarlo desde https://ffmpeg.org
         ) else (
-            echo.
             echo [OK] FFmpeg instalado. Reinicia la terminal si es necesario para refrescar PATH.
         )
     )
