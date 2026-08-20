@@ -22,6 +22,19 @@
 
 ---
 
+## 📚 Documentación y Guías
+
+Para información detallada y especificaciones técnicas, consulta la carpeta `docs/`:
+
+| Documento | Descripción |
+| :--- | :--- |
+| 🚀 **[Guía de Inicio Rápido](file:///D:/videos/dowloaderVid/docs/INICIO_RAPIDO.md)** | Ejemplos rápidos de uso por plataforma y guía del menú interactivo. |
+| 📦 **[Guía de Instalación Detallada](file:///D:/videos/dowloaderVid/docs/INSTALACION.md)** | Instalación de Python, FFmpeg, Deno/Node.js y resolución de dependencias. |
+| 🏗️ **[Análisis de Descarga Universal](file:///D:/videos/dowloaderVid/docs/ANALISIS_DESCARGA_UNIVERSAL.md)** | Arquitectura del sistema, extractores y soporte multi-red social. |
+| ⚡ **[Análisis de Optimizaciones y Mejoras](file:///D:/videos/dowloaderVid/docs/ANALISIS_MEJORAS.md)** | Diagnóstico de rendimiento, concurrencia y prevención de bloqueos. |
+
+---
+
 ## 📱 Plataformas Principales Soportadas
 
 | Plataforma | Tipo de Contenidos Soportados | Capacidades Especiales | Necesidad de Cookies |
@@ -45,7 +58,7 @@
 ## 🚀 Instalación Rápida
 
 ### Windows (Automática - Plug and Play)
-1. Haz doble-click en **[iniciar.cmd](file:///D:/videos/dowloaderVid/iniciar.cmd)** (o **[iniciar_universal.bat](file:///D:/videos/dowloaderVid/iniciar_universal.bat)**).
+1. Haz doble-click en **[iniciar.bat](file:///D:/videos/dowloaderVid/iniciar.bat)**.
 2. El script creará automáticamente el entorno virtual e instalará todas las dependencias necesarias.
 
 ### Dependencias Externas Recomendadas
@@ -53,7 +66,7 @@
    ```powershell
    winget install ffmpeg
    ```
-   * O ejecuta el instalador asistido: [instalar_ffmpeg.bat](file:///D:/videos/dowloaderVid/instalar_ffmpeg.bat).
+   * O ejecuta el instalador asistido: [scripts/instalar_ffmpeg.bat](file:///D:/videos/dowloaderVid/scripts/instalar_ffmpeg.bat).
 2. **Deno o Node.js** (Recomendado para resolver challenges de YouTube):
    ```powershell
    winget install DenoLand.Deno
@@ -110,7 +123,7 @@ python youtube_downloader.py playlist "URL_PLAYLIST" --quality 1080 --start 5 --
 ### 5. Descarga en Lote Concurrente (Batch)
 ```bash
 # Descargar lista de URLs en paralelo con 3 workers y pausa anti-bloqueo
-python youtube_downloader.py batch urls.txt --concurrency 3 --delay 1.0 --organize-by-platform
+python youtube_downloader.py batch examples/urls_ejemplo.txt --concurrency 3 --delay 1.0 --organize-by-platform
 ```
 
 ### 6. Inspección de Información y Diagnóstico de Cookies
@@ -144,35 +157,49 @@ Para acceder a videos restringidos por edad, publicaciones privadas autorizadas 
 ```
 dowloaderVid/
 │
-├── core/                      # Módulos del núcleo
-│   ├── downloader.py          # UniversalDownloader, ThreadPoolExecutor y control de fragmentos
-│   ├── extractor.py           # UniversalExtractor y Selector Interactivo Adaptativo
-│   └── cookies.py             # Sistema multi-sitio de cookies y auditoría de navegadores
+├── iniciar.bat                # Menú interactivo principal para Windows (Plug & Play)
+├── youtube_downloader.py      # Entrypoint CLI principal
+├── media_downloader.py        # Alias entrypoint
+├── downloader.py              # Alias entrypoint
+├── requirements.txt           # Dependencias de Python
+├── README.md                  # Documentación principal del repositorio
+├── .gitignore                 # Exclusiones de Git (cookies, descargas, venv)
+│
+├── docs/                      # Documentación y guías técnicas
+│   ├── INICIO_RAPIDO.md       # Guía de inicio rápido y ejemplos
+│   ├── INSTALACION.md         # Guía de instalación y configuración
+│   ├── ANALISIS_DESCARGA_UNIVERSAL.md # Arquitectura del descargador universal
+│   └── ANALISIS_MEJORAS.md    # Análisis técnico de optimizaciones
+│
+├── scripts/                   # Scripts de configuración e instalación
+│   ├── setup.bat              # Script de setup para Windows
+│   ├── setup.sh               # Script de setup para Linux/macOS
+│   └── instalar_ffmpeg.bat    # Instalador de FFmpeg con winget
+│
+├── examples/                  # Archivos de ejemplo y plantillas
+│   └── urls_ejemplo.txt       # Plantilla para descargas en lote (batch)
+│
+├── core/                      # Módulos del motor de descarga
+│   ├── downloader.py          # UniversalDownloader y descargas concurrentes
+│   ├── extractor.py           # UniversalExtractor y selector interactivo
+│   └── cookies.py             # Gestión multi-sitio de cookies y sesiones
 │
 ├── ui/                        # Capa de presentación visual
-│   ├── console.py             # Rich Console, banners y diagnóstico de errores contextual
-│   ├── progress.py            # Hooks de progreso Rich para video, audio, playlists y batch
+│   ├── console.py             # Rich Console y diagnóstico de errores
+│   ├── progress.py            # Hooks de progreso Rich para video, audio y batch
 │   └── notifier.py            # Notificaciones nativas Windows Toast
 │
 ├── utils/                     # Utilidades
-│   ├── platform_detector.py   # Detección por regex, badges Rich y tipos de plataforma
-│   ├── clipboard.py           # Portapapeles universal y resolución de URLs
-│   └── formatters.py          # Formateo de bytes, duración, vistas y códecs
+│   ├── platform_detector.py   # Detección por regex y clasificación
+│   ├── clipboard.py           # Portapapeles universal
+│   └── formatters.py          # Formateo de bytes, duración y códecs
 │
 ├── tests/                     # Suite de pruebas unitarias
 │   ├── test_modular_downloader.py
 │   └── test_platform_detector.py
 │
-├── Descargas/                 # Directorio de salida
-│   ├── Videos/                # Subcarpetas opcionales (YouTube/, TikTok/, Instagram/, etc.)
-│   ├── Audios/                # Subcarpetas opcionales (SoundCloud/, Bandcamp/, etc.)
-│   └── .download_archive.txt  # Historial de descargas
-│
-├── youtube_downloader.py      # Entrypoint CLI principal
-├── media_downloader.py        # Alias entrypoint
-├── downloader.py              # Alias entrypoint
-├── iniciar.cmd                # Menú interactivo rápido para Windows
-├── iniciar_universal.bat      # Menú interactivo ampliado
-├── requirements.txt           # Dependencias de Python
-└── setup.bat                  # Script de instalación para Windows
+└── Descargas/                 # Directorio de salida (ignorado por Git)
+    ├── Videos/                # Subcarpetas por plataforma
+    ├── Audios/                # Subcarpetas por plataforma
+    └── .download_archive.txt  # Historial de descargas
 ```

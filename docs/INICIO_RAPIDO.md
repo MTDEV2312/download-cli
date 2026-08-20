@@ -7,8 +7,8 @@ Bienvenido a **Universal Video & Audio Downloader**. Esta herramienta te permite
 ## ⚡ Inicio Rápido en Windows (La opción más fácil)
 
 1. **Abre el Menú Interactivo**:
-   - Haz doble-click en **[iniciar.cmd](file:///D:/videos/dowloaderVid/iniciar.cmd)** (o **[iniciar_universal.bat](file:///D:/videos/dowloaderVid/iniciar_universal.bat)**).
-   - Si es la primera vez, el sistema creará automáticamente el entorno virtual e instalará las librerías necesarias.
+   - Haz doble-click en **[iniciar.bat](file:///D:/videos/dowloaderVid/iniciar.bat)**.
+   - Si es la primera vez, el sistema creará automáticamente el entorno virtual e instalará las librerías necesarias (Plug & Play).
 
 2. **Copia cualquier enlace y pulsa Enter**:
    - Copia el enlace de un video de TikTok, reel de Instagram, video de YouTube, tweet o canción de SoundCloud.
@@ -20,7 +20,7 @@ Bienvenido a **Universal Video & Audio Downloader**. Esta herramienta te permite
 
 1. **Instalar dependencias y activar entorno**:
    ```bash
-   bash setup.sh
+   bash scripts/setup.sh
    source venv/bin/activate
    ```
 
@@ -31,7 +31,7 @@ Bienvenido a **Universal Video & Audio Downloader**. Esta herramienta te permite
 
 ---
 
-## 📋 Opciones del Menú Interactivo (`iniciar.cmd`)
+## 📋 Opciones del Menú Interactivo (`iniciar.bat`)
 
 * **1. Descargar Video Universal**: Descarga en máxima calidad (4K/1080p/720p) de cualquier red social o sitio web.
 * **2. Descargar Audio de Alta Fidelidad**: Extrae audio en MP3 (320k, 256k, 192k), FLAC (Lossless sin pérdida), M4A (AAC), OPUS o WAV con carátula y metadatos.
@@ -86,5 +86,5 @@ python youtube_downloader.py download "https://servidor.com/live/stream.m3u8"
 
 ### 📦 Descarga Masiva en Paralelo
 ```bash
-python youtube_downloader.py batch urls_ejemplo.txt --concurrency 3 --delay 1.0 --organize-by-platform
+python youtube_downloader.py batch examples/urls_ejemplo.txt --concurrency 3 --delay 1.0 --organize-by-platform
 ```

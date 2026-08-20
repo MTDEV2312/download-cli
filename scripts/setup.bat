@@ -1,15 +1,15 @@
 @echo off
 chcp 65001 >nul
-REM Script para configurar el entorno rapidamente
-REM Ejecutar: setup.bat
+REM Script para configurar el entorno rapidamente en Windows
+REM Ejecutar: scripts\setup.bat
 
-REM Fijar directorio de trabajo al directorio del script
-cd /d "%~dp0"
+REM Fijar directorio de trabajo a la raiz del proyecto (directorio padre de scripts)
+cd /d "%~dp0.."
 
 echo.
-echo ========================================
-echo   YouTube Video Downloader - Setup
-echo ========================================
+echo ========================================================
+echo   Universal Video & Audio Downloader - Setup
+echo ========================================================
 echo.
 
 REM Verificar si Python esta instalado
@@ -50,11 +50,11 @@ if errorlevel 1 (
 )
 
 echo [2/3] Activando entorno virtual...
-call "%~dp0venv\Scripts\activate.bat"
+call "%~dp0..\venv\Scripts\activate.bat"
 
 echo [3/3] Instalando dependencias...
-call "%~dp0venv\Scripts\python.exe" -m pip install --upgrade pip
-call "%~dp0venv\Scripts\python.exe" -m pip install -r requirements.txt
+call "%~dp0..\venv\Scripts\python.exe" -m pip install --upgrade pip
+call "%~dp0..\venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 (
     echo [ERROR] No se pudieron instalar las dependencias
     pause
@@ -62,14 +62,14 @@ if errorlevel 1 (
 )
 
 echo.
-echo ========================================
+echo ========================================================
 echo   Setup completado exitosamente!
-echo ========================================
+echo ========================================================
 echo.
 echo Proximos pasos:
 echo 1. Instalar FFmpeg ^(requerido para unir audio/video y calidades altas^)
 echo    - Windows: winget install ffmpeg
-echo    - O ejecuta: instalar_ffmpeg.bat
+echo    - O ejecuta: scripts\instalar_ffmpeg.bat
 echo.
 echo 2. Ejecuta iniciar.bat para abrir el menu interactivo:
 echo    - Doble-click en: iniciar.bat

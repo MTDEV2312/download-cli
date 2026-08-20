@@ -294,7 +294,7 @@ class UniversalDownloader:
                     "• Para audios: FFmpeg es necesario para conversión y metadatos.\n"
                     "• Para videos: Se descargará en formato directo sin combinar streams.\n"
                     "• Para subtítulos: No se podrán incrustar directamente en el contenedor MP4.\n"
-                    "• Instalación rápida: winget install ffmpeg (o ejecuta instalar_ffmpeg.bat)",
+                    "• Instalación rápida: winget install ffmpeg (o ejecuta scripts/instalar_ffmpeg.bat)",
                     console_instance=self.console
                 )
             

@@ -101,7 +101,7 @@ def handle_download_error(e: Exception, context_url: str = "", console_instance:
             "Error relacionado con FFmpeg / Códecs multimedia",
             "FFmpeg es indispensable para combinar pistas de video/audio, incrustar carátulas/subtítulos o convertir formatos.\n\n"
             "💡 [bold cyan]Soluciones recomendadas:[/bold cyan]\n"
-            "  1. Ejecuta el script instalador: [bold white]instalar_ffmpeg.bat[/bold white]\n"
+            "  1. Ejecuta el script instalador: [bold white]scripts/instalar_ffmpeg.bat[/bold white]\n"
             "  2. O instala mediante Windows Package Manager: [bold white]winget install ffmpeg[/bold white]\n"
             "  3. Asegúrate de reiniciar la terminal tras instalar FFmpeg para actualizar el PATH del sistema.",
             console_instance=c

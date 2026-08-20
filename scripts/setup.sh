@@ -1,10 +1,13 @@
 #!/bin/bash
 # Script para configurar el entorno rápidamente en Linux/Mac
-# Ejecutar: bash setup.sh
+# Ejecutar: bash scripts/setup.sh
+
+# Fijar directorio de trabajo a la raíz del proyecto
+cd "$(dirname "$0")/.." || exit 1
 
 echo ""
 echo "========================================"
-echo "  YouTube Video Downloader - Setup"
+echo "  Universal Video & Audio Downloader - Setup"
 echo "========================================"
 echo ""
 
