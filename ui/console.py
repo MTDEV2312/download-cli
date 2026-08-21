@@ -2,7 +2,8 @@
 Módulo de interfaz de consola enriquecida con Rich (paneles, tablas, banners y mensajes de error).
 """
 
-from typing import Optional
+import sys
+from typing import Optional, Dict, Any
 from rich.console import Console
 from rich.panel import Panel
 
@@ -227,3 +228,81 @@ def handle_download_error(e: Exception, context_url: str = "", console_instance:
     else:
         print_error(f"Error durante la descarga ({platform_name})", err_msg, console_instance=c)
         c.print("[dim cyan]💡 Tip: Puedes consultar información previa con: python youtube_downloader.py info <URL>[/dim cyan]")
+
+
+def prompt_interactive_recovery(
+    url: str,
+    failed_client: Optional[str] = None,
+    failed_cookie_source: Optional[str] = None,
+    console_instance: Optional[Console] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Presenta un menú interactivo en terminal TTY ante errores 403 Forbidden o desafíos antibot
+    para permitir al usuario seleccionar una acción de recuperación:
+    - Cambiar cliente de reproducción (ios, mweb, tv_embedded, android, web)
+    - Cambiar fuente de cookies (brave, firefox, chrome, edge, sin cookies)
+    - Especificar ruta a archivo de cookies (.txt)
+    - Omitir elemento actual
+    - Cancelar descarga
+    Retorna un diccionario con la acción seleccionada o None si no es una sesión interactiva TTY o si se cancela.
+    """
+    if not hasattr(sys.stdin, 'isatty') or not sys.stdin.isatty():
+        return None
+
+    c = console_instance or console
+    from rich.prompt import Prompt
+
+    c.print()
+    menu_content = (
+        f"[bold yellow]⚠️ Bloqueo de acceso detectado (HTTP 403 / Desafío Anti-Bot)[/bold yellow]\n"
+        f"[dim white]URL: {url}[/dim white]\n"
+        + (f"[dim]Cliente intentado: {failed_client}[/dim]\n" if failed_client else "")
+        + (f"[dim]Fuente cookies: {failed_cookie_source}[/dim]\n" if failed_cookie_source else "")
+        + "\n[bold cyan]Elige una opción de recuperación interactiva:[/bold cyan]\n"
+        "  [bold yellow]1[/bold yellow] - 🔄 Reintentar con cliente de reproducción alternativo (ios, mweb, tv_embedded, android, web)\n"
+        "  [bold yellow]2[/bold yellow] - 🌐 Cambiar navegador de cookies (firefox, brave, chrome, edge, o sin cookies)\n"
+        "  [bold yellow]3[/bold yellow] - 📁 Especificar ruta a archivo de cookies (.txt)\n"
+        "  [bold yellow]4[/bold yellow] - ⏭️  Omitir este elemento y continuar con el siguiente\n"
+        "  [bold yellow]5[/bold yellow] - ❌ Cancelar / Abortar descarga"
+    )
+    c.print(Panel(menu_content, title="[bold cyan]🛠️ Menú de Recuperación Interactiva[/bold cyan]", border_style="yellow", expand=False))
+
+    choice = Prompt.ask("[bold green]?[/bold green] Selecciona una opción", choices=["1", "2", "3", "4", "5"], default="1", console=c).strip()
+
+    if choice == "1":
+        c.print("\n[bold cyan]Clientes de reproducción disponibles:[/bold cyan]")
+        c.print("  [bold yellow]1[/bold yellow] - ios (Cliente Apple iOS - alta tasa de éxito ante 403)")
+        c.print("  [bold yellow]2[/bold yellow] - mweb (Cliente Web Móvil)")
+        c.print("  [bold yellow]3[/bold yellow] - tv_embedded (Smart TV embebido)")
+        c.print("  [bold yellow]4[/bold yellow] - android (Cliente nativo Android)")
+        c.print("  [bold yellow]5[/bold yellow] - web (Cliente Web de escritorio)")
+        client_choice = Prompt.ask("[bold green]?[/bold green] Elige cliente", choices=["1", "2", "3", "4", "5"], default="1", console=c).strip()
+        client_map = {"1": "ios", "2": "mweb", "3": "tv_embedded", "4": "android", "5": "web"}
+        selected_client = client_map.get(client_choice, "ios")
+        return {'action': 'retry_client', 'client': selected_client}
+
+    elif choice == "2":
+        c.print("\n[bold cyan]Navegadores soportados:[/bold cyan]")
+        c.print("  [bold yellow]1[/bold yellow] - firefox (Recomendado / sin bloqueo App-Bound en Windows)")
+        c.print("  [bold yellow]2[/bold yellow] - brave (o brave:Default)")
+        c.print("  [bold yellow]3[/bold yellow] - chrome (o chrome:Default)")
+        c.print("  [bold yellow]4[/bold yellow] - edge (o edge:Default)")
+        c.print("  [bold yellow]5[/bold yellow] - Ninguno (descargar sin cookies)")
+        browser_choice = Prompt.ask("[bold green]?[/bold green] Elige navegador", choices=["1", "2", "3", "4", "5"], default="1", console=c).strip()
+        browser_map = {"1": "firefox", "2": "brave", "3": "chrome", "4": "edge", "5": "none"}
+        selected_browser = browser_map.get(browser_choice, "firefox")
+        if selected_browser == "none":
+            return {'action': 'retry_no_cookies'}
+        return {'action': 'retry_cookies_browser', 'browser': selected_browser}
+
+    elif choice == "3":
+        cookie_path = Prompt.ask("[bold green]?[/bold green] Introduce la ruta al archivo cookies.txt", default="cookies/cookies.txt", console=c).strip()
+        return {'action': 'retry_cookies_file', 'file': cookie_path}
+
+    elif choice == "4":
+        return {'action': 'skip'}
+
+    elif choice == "5":
+        return {'action': 'abort'}
+
+    return None

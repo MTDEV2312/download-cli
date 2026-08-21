@@ -97,9 +97,6 @@ def cli(ctx):
         console.print("  • [green]python youtube_downloader.py download \"URL\" --organize-by-platform[/green]        (organiza en subcarpetas por plataforma)")
         console.print("  • [green]python youtube_downloader.py download \"URL\" --audio --audio-format mp3[/green]     (descargar solo audio)")
         console.print("  • [green]python youtube_downloader.py download \"URL\" --subtitles[/green]                  (con subtítulos)")
-        console.print("  • [green]python youtube_downloader.py info \"URL\"[/green]                                    (ver resoluciones y formatos)")
-        console.print("  • [green]python youtube_downloader.py cookies[/green]                                       (diagnosticar cookies multi-sitio)")
-        console.print("  • [green]python youtube_downloader.py playlist \"URL\"[/green]                                 (descargar playlist o álbum)")
         console.print("  • [green]python youtube_downloader.py batch urls.txt --concurrency 3[/green]                (descarga en lote concurrente)\n")
 
 
@@ -128,8 +125,8 @@ def cli(ctx):
               help='Incrustar subtítulos en el contenedor del video')
 @click.option('--write-subs/--no-write-subs', default=False,
               help='Guardar archivos de subtítulos (.srt / .vtt) en disco')
-@click.option('--cookies-from', type=click.Choice(SUPPORTED_BROWSERS),
-              help='Extraer cookies directamente del navegador especificado')
+@click.option('--cookies-from', type=str,
+              help='Extraer cookies del navegador o perfil (ej. firefox, brave, brave:Default, "chrome:Profile 1")')
 @click.option('--cookies-file', type=click.Path(exists=True),
               help='Ruta al archivo de cookies (ej. cookies.txt, cookies_instagram.txt, youtube_cookies.txt)')
 @click.option('--notify/--no-notify', default=True,
@@ -140,12 +137,19 @@ def cli(ctx):
               help='Organizar descargas en subcarpetas por plataforma (ej. Descargas/Videos/TikTok/) (default: True)')
 @click.option('--output', '-o', default='Descargas',
               help='Carpeta de salida (default: Descargas)')
+@click.option('--sleep-interval', type=float, default=None,
+              help='Pausa base en segundos antes de la descarga')
+@click.option('--max-sleep-interval', type=float, default=None,
+              help='Pausa máxima en segundos con jitter uniforme')
+@click.option('--interactive/--no-interactive', default=True,
+              help='Permitir menú interactivo de recuperación ante desafíos 403 / antibot (default: True)')
 @click.option('--clipboard', '-c', is_flag=True,
               help='Usar automáticamente la URL del portapapeles sin solicitar confirmación')
 def download(
     url, quality, audio, audio_format, audio_quality, embed_thumbnail,
     interactive_format, subtitles, sub_lang, embed_subs, write_subs,
-    cookies_from, cookies_file, notify, archive, organize_by_platform, output, clipboard
+    cookies_from, cookies_file, notify, archive, organize_by_platform, output,
+    sleep_interval, max_sleep_interval, interactive, clipboard
 ):
     """
     Descarga un video o audio de cualquier plataforma soportada (YouTube, TikTok, Instagram, Twitter/X, Twitch, SoundCloud, Bandcamp, Vimeo, HLS/DASH streams, etc.).
@@ -198,15 +202,18 @@ def download(
         use_archive=archive,
         info_dict=info_dict,
         notify=notify,
-        organize_by_platform=organize_by_platform
+        organize_by_platform=organize_by_platform,
+        sleep_interval=sleep_interval,
+        max_sleep_interval=max_sleep_interval,
+        interactive=interactive
     )
     sys.exit(0 if success else 1)
 
 
 @cli.command()
 @click.argument('url', required=False)
-@click.option('--cookies-from', type=click.Choice(SUPPORTED_BROWSERS),
-              help='Extraer cookies del navegador')
+@click.option('--cookies-from', type=str,
+              help='Extraer cookies del navegador o perfil (ej. firefox, brave, brave:Default)')
 @click.option('--cookies-file', type=click.Path(exists=True),
               help='Ruta al archivo de cookies')
 @click.option('--clipboard', '-c', is_flag=True,
@@ -235,7 +242,7 @@ def info(url, cookies_from, cookies_file, clipboard):
 
 @cli.command()
 @click.argument('file', type=click.Path(exists=True))
-@click.option('--quality', '-q', default='1080',
+@click.option('--quality', '-q', default='1080', 
               type=click.Choice(['720', '1080', '1440', '2160', 'best']),
               help='Calidad de descarga')
 @click.option('--audio', '-a', is_flag=True,
@@ -256,8 +263,8 @@ def info(url, cookies_from, cookies_file, clipboard):
               help='Incrustar subtítulos en el video')
 @click.option('--write-subs/--no-write-subs', default=False,
               help='Guardar archivos de subtítulos en disco')
-@click.option('--cookies-from', type=click.Choice(SUPPORTED_BROWSERS),
-              help='Extraer cookies del navegador')
+@click.option('--cookies-from', type=str,
+              help='Extraer cookies del navegador o perfil')
 @click.option('--cookies-file', type=click.Path(exists=True),
               help='Ruta al archivo de cookies (ej. cookies.txt)')
 @click.option('--notify/--no-notify', default=True,
@@ -272,10 +279,19 @@ def info(url, cookies_from, cookies_file, clipboard):
               help='Número de descargas simultáneas en paralelo (1-8, default: 2)')
 @click.option('--delay', '-d', default=1.0, type=float,
               help='Pausa en segundos entre inicios de descarga con jitter aleatorio (default: 1.0)')
+@click.option('--sleep-interval', type=float, default=None,
+              help='Pausa mínima/base entre hilos con jitter aleatorio')
+@click.option('--max-sleep-interval', type=float, default=None,
+              help='Pausa máxima entre hilos con jitter uniforme')
+@click.option('--abort-on-error', is_flag=True, default=False,
+              help='Detener todo el lote ante el primer error')
+@click.option('--interactive/--no-interactive', default=True,
+              help='Permitir menú interactivo de recuperación (default: True)')
 def batch(
     file, quality, audio, audio_format, audio_quality, embed_thumbnail,
     subtitles, sub_lang, embed_subs, write_subs, cookies_from, cookies_file,
-    notify, archive, organize_by_platform, output, concurrency, delay
+    notify, archive, organize_by_platform, output, concurrency, delay,
+    sleep_interval, max_sleep_interval, abort_on_error, interactive
 ):
     """
     Descarga múltiples videos/audios desde un archivo de texto (una URL por línea) con concurrencia multihilo de cualquier plataforma.
@@ -298,7 +314,11 @@ def batch(
         notify=notify,
         concurrency=concurrency,
         delay=delay,
-        organize_by_platform=organize_by_platform
+        organize_by_platform=organize_by_platform,
+        sleep_interval=sleep_interval,
+        max_sleep_interval=max_sleep_interval,
+        abort_on_error=abort_on_error,
+        interactive=interactive
     )
 
 
@@ -325,8 +345,8 @@ def batch(
               help='Incrustar subtítulos en el video')
 @click.option('--write-subs/--no-write-subs', default=False,
               help='Guardar archivos de subtítulos en disco')
-@click.option('--cookies-from', type=click.Choice(SUPPORTED_BROWSERS),
-              help='Extraer cookies del navegador')
+@click.option('--cookies-from', type=str,
+              help='Extraer cookies del navegador o perfil (ej. firefox, brave, brave:Default, "chrome:Profile 1")')
 @click.option('--cookies-file', type=click.Path(exists=True),
               help='Ruta al archivo de cookies (ej. cookies.txt)')
 @click.option('--notify/--no-notify', default=True,
@@ -337,19 +357,28 @@ def batch(
               help='Organizar descargas en subcarpetas por plataforma (ej. Descargas/Videos/YouTube/) (default: True)')
 @click.option('--output', '-o', default='Descargas',
               help='Carpeta de salida (default: Descargas)')
-@click.option('--skip-errors', '-s', is_flag=True,
-              help='Continuar descargando aunque fallen algunos elementos')
+@click.option('--skip-errors/--no-skip-errors', default=True,
+              help='Continuar descargando aunque fallen algunos elementos (default: True)')
+@click.option('--abort-on-error', is_flag=True, default=False,
+              help='Detener inmediatamente la lista ante el primer fallo de elemento')
 @click.option('--start', '-st', default=1, type=int,
               help='Número del elemento desde el que comenzar (default: 1)')
+@click.option('--sleep-interval', type=float, default=None,
+              help='Pausa mínima/base en segundos entre elementos con jitter aleatorio')
+@click.option('--max-sleep-interval', type=float, default=None,
+              help='Pausa máxima en segundos entre elementos con jitter uniforme')
+@click.option('--interactive/--no-interactive', default=True,
+              help='Permitir menú interactivo de recuperación ante desafíos 403 (default: True)')
 @click.option('--clipboard', '-c', is_flag=True,
               help='Usar automáticamente la URL del portapapeles')
 def playlist(
     url, quality, audio, audio_format, audio_quality, embed_thumbnail,
     subtitles, sub_lang, embed_subs, write_subs, cookies_from, cookies_file,
-    notify, archive, organize_by_platform, output, skip_errors, start, clipboard
+    notify, archive, organize_by_platform, output, skip_errors, abort_on_error,
+    start, sleep_interval, max_sleep_interval, interactive, clipboard
 ):
     """
-    Descarga una playlist, set de SoundCloud, álbum de Bandcamp, perfil o canal en orden con barras de progreso.
+    Descarga una playlist, set de SoundCloud, álbum de Bandcamp, perfil o canal en orden con barras de progreso y auditoría resiliente.
     """
     if clipboard:
         clip_url = get_clipboard_url()
@@ -380,10 +409,14 @@ def playlist(
         cookies_from=cookies_from,
         cookies_file=cookies_file,
         skip_errors=skip_errors,
+        abort_on_error=abort_on_error,
         start_from=start,
         use_archive=archive,
         notify=notify,
-        organize_by_platform=organize_by_platform
+        organize_by_platform=organize_by_platform,
+        sleep_interval=sleep_interval,
+        max_sleep_interval=max_sleep_interval,
+        interactive=interactive
     )
     sys.exit(0 if success else 1)
 

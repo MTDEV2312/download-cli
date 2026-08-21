@@ -4,8 +4,11 @@ Soporta YouTube, TikTok, Instagram, Twitter/X, Twitch, Facebook, Reddit, SoundCl
 Implementa búsqueda en cascada inteligente en carpeta cookies/ y auditoría de sesiones en navegadores.
 """
 
+import os
 import io
 import sys
+import shutil
+import tempfile
 import contextlib
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple, Set
@@ -75,6 +78,122 @@ AUDIT_COOKIE_TARGETS: List[Tuple[str, str, Optional[PlatformType]]] = [
 ]
 
 
+def parse_browser_spec(cookies_from: str) -> Tuple[str, Optional[str]]:
+    """
+    Parsea una especificación de navegador y perfil opcional:
+    - 'brave' -> ('brave', None)
+    - 'brave:Default' -> ('brave', 'Default')
+    - 'chrome:Profile 1' -> ('chrome', 'Profile 1')
+    - 'edge:Profile 2' -> ('edge', 'Profile 2')
+    - 'firefox:default-release' -> ('firefox', 'default-release')
+    """
+    if not cookies_from or not isinstance(cookies_from, str):
+        return ("", None)
+
+    spec = cookies_from.strip()
+    if ':' in spec:
+        parts = spec.split(':', 1)
+        browser = parts[0].strip().lower()
+        profile = parts[1].strip() if parts[1].strip() else None
+        return (browser, profile)
+    return (spec.lower(), None)
+
+
+def _get_chromium_user_data_path(browser_name: str) -> Optional[Path]:
+    """Retorna la ruta al directorio User Data de un navegador Chromium en Windows si existe"""
+    b = browser_name.lower()
+    local_appdata = os.environ.get('LOCALAPPDATA', '')
+    appdata = os.environ.get('APPDATA', '')
+
+    paths_map = {
+        'chrome': Path(local_appdata) / 'Google' / 'Chrome' / 'User Data' if local_appdata else None,
+        'brave': Path(local_appdata) / 'BraveSoftware' / 'Brave-Browser' / 'User Data' if local_appdata else None,
+        'edge': Path(local_appdata) / 'Microsoft' / 'Edge' / 'User Data' if local_appdata else None,
+        'vivaldi': Path(local_appdata) / 'Vivaldi' / 'User Data' if local_appdata else None,
+        'opera': Path(appdata) / 'Opera Software' / 'Opera Stable' if appdata else None,
+        'opera_gx': Path(appdata) / 'Opera Software' / 'Opera GX Stable' if appdata else None,
+    }
+    target = paths_map.get(b)
+    if target and target.exists():
+        return target
+    return None
+
+
+def get_available_browser_profiles(browser_name: str) -> List[str]:
+    """
+    Descubre perfiles de usuario disponibles para un navegador Chromium en Windows.
+    Retorna nombres como ['Default', 'Profile 1', 'Profile 2'] si existen.
+    """
+    b = browser_name.lower()
+    user_data = _get_chromium_user_data_path(b)
+    if not user_data or not user_data.exists():
+        return ['Default'] if b in ('chrome', 'brave', 'edge', 'vivaldi', 'opera') else []
+
+    profiles: List[str] = []
+
+    # Comprobar directorio 'Default'
+    if (user_data / 'Default').is_dir():
+        profiles.append('Default')
+
+    # Comprobar directorios tipo 'Profile 1', 'Profile 2', etc.
+    try:
+        for item in user_data.iterdir():
+            if item.is_dir() and item.name.startswith('Profile '):
+                profiles.append(item.name)
+    except Exception:
+        pass
+
+    # Si es Opera o estructura sin carpetas de perfil directas pero con cookies
+    if not profiles and ((user_data / 'Network' / 'Cookies').exists() or (user_data / 'Cookies').exists()):
+        profiles.append('Default')
+
+    return sorted(profiles, key=lambda x: (x != 'Default', x)) if profiles else ['Default']
+
+
+def extract_cookies_lock_safe(browser_name: str, profile: Optional[str] = None) -> Optional[Path]:
+    """
+    Copia la base de datos de cookies de SQLite y archivos de clave a una carpeta temporal
+    para evitar conflictos de bloqueo exclusivo (WinError 32) cuando el navegador Chromium está en ejecución en Windows.
+    Retorna la ruta al archivo de cookies copiado o None si no se localizó.
+    """
+    b = browser_name.lower()
+    user_data = _get_chromium_user_data_path(b)
+    if not user_data or not user_data.exists():
+        return None
+
+    target_profile = profile or 'Default'
+    profile_dir = user_data / target_profile if (user_data / target_profile).is_dir() else user_data
+
+    # Localizar archivo de cookies
+    cookie_file = None
+    for candidate in [profile_dir / 'Network' / 'Cookies', profile_dir / 'Cookies']:
+        if candidate.exists():
+            cookie_file = candidate
+            break
+
+    if not cookie_file:
+        return None
+
+    try:
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"locksafe_{b}_{target_profile}_"))
+        temp_cookies = temp_dir / "Cookies"
+
+        # Copia segura de archivo SQLite de cookies
+        with open(cookie_file, 'rb') as src, open(temp_cookies, 'wb') as dst:
+            dst.write(src.read())
+
+        # Copiar también Local State si existe para descifrado de claves DPAPI/AES
+        local_state = user_data / 'Local State'
+        if local_state.exists():
+            temp_local_state = temp_dir / 'Local State'
+            with open(local_state, 'rb') as src, open(temp_local_state, 'wb') as dst:
+                dst.write(src.read())
+
+        return temp_cookies
+    except Exception:
+        return None
+
+
 def find_cookie_file(filename: str) -> Optional[Path]:
     """
     Busca un archivo de cookies con resolución inteligente:
@@ -114,17 +233,19 @@ def get_cookie_opts(
     """
     Configura opciones de cookies con búsqueda en cascada inteligente multi-sitio:
     1. Archivo de cookies explícito pasado por parámetro (cookies_file o default_cookies_file)
-    2. Navegador explícito pasado por parámetro (cookies_from o default_cookies_from)
+    2. Navegador explícito pasado por parámetro (cookies_from o default_cookies_from), con soporte de perfiles (ej. 'brave:Default')
     3. Archivo específico de la plataforma en cookies/ o raíz (ej. cookies/cookies_instagram.txt)
     4. Archivo genérico cookies/cookies.txt o cookies.txt
     5. Archivo legado cookies/youtube_cookies.txt o youtube_cookies.txt (para YouTube o fallback)
     """
     opts: Dict[str, Any] = {}
 
-    # Manejo de llamada posicional con nombre de navegador: get_cookie_opts('firefox')
-    if url and isinstance(url, str) and url.lower() in SUPPORTED_BROWSERS and cookies_from is None:
-        cookies_from = url
-        url = None
+    # Manejo de llamada posicional con nombre de navegador o navegador:perfil: get_cookie_opts('firefox') o get_cookie_opts('brave:Default')
+    if url and isinstance(url, str) and cookies_from is None:
+        cand_b, _ = parse_browser_spec(url)
+        if cand_b in SUPPORTED_BROWSERS:
+            cookies_from = url
+            url = None
 
     # 1. Archivo de cookies explícito o por defecto
     target_file = cookies_file or default_cookies_file
@@ -134,10 +255,11 @@ def get_cookie_opts(
             opts['cookiefile'] = str(found_file.resolve())
             return opts
 
-    # 2. Navegador explícito o por defecto
+    # 2. Navegador explícito o por defecto (con soporte para browser:profile)
     target_browser = cookies_from or default_cookies_from
     if target_browser:
-        opts['cookiesfrombrowser'] = (target_browser.lower(), None, None, None)
+        browser, profile = parse_browser_spec(target_browser)
+        opts['cookiesfrombrowser'] = (browser, profile, None, None)
         return opts
 
     # Determinar la plataforma si se especificó url o platform
@@ -262,12 +384,18 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
         header_style="bold magenta",
         border_style="green"
     )
-    browsers_table.add_column("Navegador", style="bold white", justify="left")
+    browsers_table.add_column("Navegador / Perfiles", style="bold white", justify="left")
     browsers_table.add_column("Estado", justify="center")
-    browsers_table.add_column("Sesiones Detectadas / Recomendación", justify="left")
+    browsers_table.add_column("Sesiones Detectadas / Diagnóstico", justify="left")
+
+    has_appbound_or_locked = False
 
     with c.status("[bold cyan]🔍 Analizando navegadores instalados y sesiones activas...", spinner="dots"):
         for b in SUPPORTED_BROWSERS:
+            profiles = get_available_browser_profiles(b)
+            profile_label = f" ({', '.join(profiles)})" if len(profiles) > 1 else ""
+            browser_display = f"🌐 {b.capitalize()}{profile_label}"
+
             buf = io.StringIO()
             try:
                 with contextlib.redirect_stderr(buf), contextlib.redirect_stdout(buf):
@@ -287,7 +415,7 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
                     
                     if detected_platforms:
                         browsers_table.add_row(
-                            f"🌐 {b.capitalize()}",
+                            browser_display,
                             "[bold green]✅ Sesión Activa[/bold green]",
                             f"Sesiones en: {', '.join(detected_platforms)}"
                         )
@@ -295,33 +423,41 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
                         total_cookies = len(list(jar))
                         if total_cookies > 0:
                             browsers_table.add_row(
-                                f"🌐 {b.capitalize()}",
+                                browser_display,
                                 "[bold yellow]⚠️ Sin Redes Sociales[/bold yellow]",
                                 f"Navegador accesible ({total_cookies} cookies en otros dominios)"
                             )
                         else:
                             browsers_table.add_row(
-                                f"🌐 {b.capitalize()}",
+                                browser_display,
                                 "[bold yellow]⚠️ Sin Sesión[/bold yellow]",
                                 "Navegador accesible pero sin cookies registradas"
                             )
             except Exception as e:
                 err_text = (str(e) + " " + buf.getvalue()).lower()
-                if any(kw in err_text for kw in ("dpapi", "database", "copy", "locked", "permission", "access")):
+                if any(kw in err_text for kw in ("app-bound", "appbound", "dpapi", "cryptunprotectdata", "decrypt")):
+                    has_appbound_or_locked = True
                     browsers_table.add_row(
-                        f"🌐 {b.capitalize()}",
-                        "[bold yellow]🔒 Cifrado / Bloqueado[/bold yellow]",
-                        "Bloqueado por DPAPI de Windows o navegador en uso. Usa archivo cookies.txt"
+                        browser_display,
+                        "[bold yellow]🔒 Cifrado App-Bound / DPAPI[/bold yellow]",
+                        "Protegido por App-Bound encryption de Windows. Usa archivo cookies.txt en cookies/"
+                    )
+                elif any(kw in err_text for kw in ("database", "copy", "locked", "permission", "access", "winerror 32", "in use")):
+                    has_appbound_or_locked = True
+                    browsers_table.add_row(
+                        browser_display,
+                        "[bold yellow]🔒 Base de Datos Bloqueada[/bold yellow]",
+                        "Bloqueado por navegador en ejecución. Cierra el navegador o usa cookies/"
                     )
                 elif any(kw in err_text for kw in ("could not find", "not found", "no such")):
                     browsers_table.add_row(
-                        f"🌐 {b.capitalize()}",
+                        browser_display,
                         "[dim]No instalado[/dim]",
                         "No se encontró base de datos del navegador"
                     )
                 else:
                     browsers_table.add_row(
-                        f"🌐 {b.capitalize()}",
+                        browser_display,
                         "[red]✗ Error[/red]",
                         f"{str(e)[:45]}..."
                     )
@@ -330,7 +466,20 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
     c.print()
 
     # =========================================================================
-    # 3. Panel de Consejos y Prevención por Plataforma
+    # 3. Diagnóstico de Cifrado App-Bound (Windows Chromium) si aplica
+    # =========================================================================
+    if has_appbound_or_locked:
+        appbound_panel = (
+            "[bold yellow]⚠️ Diagnóstico de Cifrado App-Bound y Bloqueos de Archivo (Windows Chromium):[/bold yellow]\n\n"
+            "• [bold white]Cifrado App-Bound (Chrome 127+, Brave, Edge):[/bold white] Las versiones recientes en Windows cifran las cookies con una clave vinculada exclusivamente al ejecutable del navegador.\n"
+            "• [bold white]Bloqueo WinError 32:[/bold white] Si el navegador está abierto, SQLite mantiene un bloqueo exclusivo sobre el archivo de cookies.\n"
+            "• [bold green]Solución 100% fiable:[/bold green] Exporta tus cookies en formato Netscape usando la extensión [bold yellow]'Get cookies.txt LOCALLY'[/bold yellow] y colócalas en la carpeta [bold yellow]'cookies/'[/bold yellow] (ej. [bold yellow]cookies/cookies_youtube.txt[/bold yellow])."
+        )
+        c.print(Panel(appbound_panel, title="[bold yellow]🔒 Aviso de Seguridad y Cifrado App-Bound[/bold yellow]", border_style="yellow", expand=False))
+        c.print()
+
+    # =========================================================================
+    # 4. Panel de Consejos y Prevención por Plataforma
     # =========================================================================
     consejos = (
         "[bold cyan]💡 Consejos por Plataforma para Evitar Bloqueos y Restricciones:[/bold cyan]\n\n"
@@ -345,7 +494,7 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
     c.print()
 
     # =========================================================================
-    # 4. Guía de Exportación y Comandos CLI
+    # 5. Guía de Exportación y Comandos CLI
     # =========================================================================
     instrucciones = (
         "[bold cyan]📌 Cómo Exportar y Usar Cookies Multi-Plataforma:[/bold cyan]\n\n"
@@ -364,7 +513,8 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
         "   • El programa las detectará y aplicará automáticamente según la URL a descargar.\n\n"
         "2. [bold white]Método Directo por Navegador (CLI):[/bold white]\n"
         "   • [green]python youtube_downloader.py download \"URL\" --cookies-from firefox[/green]\n"
-        "   • [green]python youtube_downloader.py download \"URL\" --cookies-from brave[/green]\n\n"
+        "   • [green]python youtube_downloader.py download \"URL\" --cookies-from brave:Default[/green]\n"
+        "   • [green]python youtube_downloader.py download \"URL\" --cookies-from \"chrome:Profile 1\"[/green]\n\n"
         "3. [bold white]Método Archivo Explícito (CLI):[/bold white]\n"
         "   • [green]python youtube_downloader.py download \"URL\" --cookies-file cookies/mis_cookies.txt[/green]"
     )

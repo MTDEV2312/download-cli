@@ -66,6 +66,68 @@ def _parse_format_dimensions(fmt: Dict[str, Any]) -> Tuple[int, int, int]:
     return w, h, fps
 
 
+# Clientes de reproducción YouTube para rotación automática y recuperación ante bloqueos 403 / antibot
+FALLBACK_PLAYER_CLIENTS: List[str] = ['android', 'ios', 'mweb', 'tv_embedded', 'web']
+
+
+def extract_info_with_client_fallback(
+    url: str,
+    base_ydl_opts: Dict[str, Any],
+    candidate_clients: Optional[List[str]] = None,
+    console_instance: Optional[Console] = None
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Intenta la extracción de metadatos iterando a través de clientes de reproducción candidatos
+    cuando se encuentran errores HTTP 403 Forbidden, desafíos antibot o restricciones de poToken en YouTube.
+    Retorna (info_dict, cliente_exitoso) o (None, None) en caso de fallo.
+    """
+    c = console_instance or console
+    platform_type, _, _ = detect_platform(url)
+
+    if platform_type != PlatformType.YOUTUBE:
+        try:
+            with yt_dlp.YoutubeDL(base_ydl_opts) as ydl:
+                return (ydl.extract_info(url, download=False), None)
+        except Exception as e:
+            handle_download_error(e, url, console_instance=c)
+            return (None, None)
+
+    clients = list(candidate_clients or FALLBACK_PLAYER_CLIENTS)
+    last_error: Optional[Exception] = None
+
+    for idx, client in enumerate(clients):
+        ydl_opts = dict(base_ydl_opts)
+        ext_args = dict(ydl_opts.get('extractor_args', {}))
+        yt_args = dict(ext_args.get('youtube', {}))
+        yt_args['player_client'] = [client]
+        ext_args['youtube'] = yt_args
+        ydl_opts['extractor_args'] = ext_args
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if info is not None:
+                    if idx > 0:
+                        c.print(f"[dim cyan]ℹ️ Extracción recuperada con éxito usando cliente YouTube: '{client}'[/dim cyan]")
+                    return (info, client)
+        except Exception as e:
+            last_error = e
+            err_lower = str(e).lower()
+            is_403_or_bot = "403" in str(e) or "forbidden" in err_lower or any(
+                k in err_lower for k in ("bot", "sign in", "confirm you", "n challenge", "potoken", "po_token", "rate-limit", "rate limit", "429")
+            )
+            # Si hay más clientes y el error es susceptible de rotación, continuar
+            if idx < len(clients) - 1 and is_403_or_bot:
+                continue
+            elif idx == len(clients) - 1:
+                # Todos los clientes candidatos agotados
+                break
+
+    if last_error:
+        handle_download_error(last_error, url, console_instance=c)
+    return (None, None)
+
+
 def get_raw_info(
     url: str,
     js_runtimes: Optional[Dict[str, Any]] = None,
@@ -75,7 +137,7 @@ def get_raw_info(
     default_cookies_file: Optional[str] = None,
     console_instance: Optional[Console] = None
 ) -> Optional[Dict[str, Any]]:
-    """Obtiene la información cruda completa de yt-dlp sin descargar para cualquier plataforma"""
+    """Obtiene la información cruda completa de yt-dlp sin descargar para cualquier plataforma con rotación de clientes"""
     try:
         platform_type, _, _ = detect_platform(url)
         logger = YtDlpQuietLogger()
@@ -105,8 +167,12 @@ def get_raw_info(
         )
         ydl_opts.update(cookie_opts)
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(url, download=False)
+        info, _ = extract_info_with_client_fallback(
+            url,
+            base_ydl_opts=ydl_opts,
+            console_instance=console_instance
+        )
+        return info
     except Exception as e:
         handle_download_error(e, url, console_instance=console_instance)
         return None

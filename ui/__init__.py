@@ -10,6 +10,7 @@ from ui.console import (
     print_warning,
     print_info_panel,
     handle_download_error,
+    prompt_interactive_recovery,
 )
 from ui.notifier import (
     HAS_WINOTIFY,
@@ -34,6 +35,7 @@ __all__ = [
     'print_warning',
     'print_info_panel',
     'handle_download_error',
+    'prompt_interactive_recovery',
     'HAS_WINOTIFY',
     'show_desktop_notification',
     'get_notification_title',

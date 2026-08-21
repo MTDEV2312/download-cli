@@ -6,6 +6,7 @@ Bandcamp, Vimeo, Kick, streams directos HLS/DASH y web genérica.
 """
 
 import os
+import sys
 import shutil
 import time
 import random
@@ -28,6 +29,7 @@ from ui.console import (
     print_warning,
     print_info_panel,
     handle_download_error,
+    prompt_interactive_recovery,
 )
 from ui.progress import (
     YtDlpQuietLogger,
@@ -37,7 +39,14 @@ from ui.progress import (
 )
 from ui.notifier import show_desktop_notification, get_notification_title
 from core.cookies import get_cookie_opts
-from core.extractor import get_raw_info, get_video_info, get_media_info, display_info
+from core.extractor import (
+    get_raw_info,
+    get_video_info,
+    get_media_info,
+    display_info,
+    FALLBACK_PLAYER_CLIENTS,
+    extract_info_with_client_fallback,
+)
 from utils.formatters import format_duration, format_bytes, sanitize_filename
 from utils.platform_detector import (
     PlatformType,
@@ -47,6 +56,48 @@ from utils.platform_detector import (
     detect_platform,
     get_platform_info,
 )
+
+
+def calculate_pacing_delay(
+    sleep_interval: Optional[float] = None,
+    max_sleep_interval: Optional[float] = None,
+    default_pacing: bool = True
+) -> float:
+    """
+    Calcula la duración de la pausa en segundos con jitter aleatorio uniforme:
+    - Si sleep_interval == 0 and (max_sleep_interval is None or max_sleep_interval == 0): retorna 0.0 (override explícito)
+    - Si se especifican sleep_interval y max_sleep_interval: retorna random.uniform(min_val, max_val)
+    - Si solo se especifica sleep_interval > 0: retorna max(0.0, sleep_interval + random.uniform(-0.5, 0.5))
+    - Si solo se especifica max_sleep_interval > 0: retorna random.uniform(0.0, max_sleep_interval)
+    - Si ambos son None y default_pacing=True: retorna polite default 1.0s ± 0.5s -> random.uniform(0.5, 1.5)
+    - Si ambos son None y default_pacing=False: retorna 0.0
+    """
+    if sleep_interval is not None and max_sleep_interval is not None:
+        s = float(sleep_interval)
+        m = float(max_sleep_interval)
+        if s == 0.0 and m == 0.0:
+            return 0.0
+        low = min(s, m)
+        high = max(s, m)
+        return random.uniform(low, high)
+
+    if sleep_interval is not None and max_sleep_interval is None:
+        s = float(sleep_interval)
+        if s == 0.0:
+            return 0.0
+        jitter = random.uniform(-0.5, 0.5)
+        return max(0.0, s + jitter)
+
+    if sleep_interval is None and max_sleep_interval is not None:
+        m = float(max_sleep_interval)
+        if m == 0.0:
+            return 0.0
+        return random.uniform(0.0, m)
+
+    if default_pacing:
+        return random.uniform(0.5, 1.5)
+
+    return 0.0
 
 
 class UniversalDownloader:
@@ -276,12 +327,17 @@ class UniversalDownloader:
         info_dict: Optional[Dict[str, Any]] = None,
         notify: bool = True,
         organize_by_platform: Optional[bool] = None,
+        sleep_interval: Optional[float] = None,
+        max_sleep_interval: Optional[float] = None,
+        interactive: bool = False,
     ) -> bool:
         """
         Descarga video o audio de cualquier plataforma soportada con soporte para:
         - Selector de resoluciones y formatos adaptativo por plataforma
         - Descarga e incrustación de subtítulos
-        - Gestión y selección de cookies
+        - Gestión y selección de cookies (con soporte de perfiles browser:profile)
+        - Rotación automática de clientes YouTube ante bloqueos 403
+        - Recuperación interactiva en terminal TTY
         - Notificaciones nativas de Windows Toast
         """
         start_time = time.time()
@@ -373,15 +429,19 @@ class UniversalDownloader:
             cookie_opts = self._get_cookie_opts(url=url, cookies_from=cookies_from, cookies_file=cookies_file)
             ydl_opts.update(cookie_opts)
             
-            # Reutilizar info_dict si ya fue obtenido en el selector interactivo
+            # Reutilizar info_dict si ya fue obtenido en el selector interactivo o extraer con fallback
             info = info_dict
+            active_client = None
             if info is None:
                 with self.console.status(f"[bold cyan]📥 Obteniendo información de {platform_name}...", spinner="dots"):
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=False)
+                    info, active_client = extract_info_with_client_fallback(
+                        url,
+                        base_ydl_opts=ydl_opts,
+                        console_instance=self.console
+                    )
             
             if info is None:
-                print_info_panel("El contenido ya fue descargado previamente (registrado en el historial de descargas).", "Historial", console_instance=self.console)
+                print_info_panel("El contenido ya fue descargado previamente o no se pudo acceder a los metadatos.", "Información", console_instance=self.console)
                 return True
 
             video_entry = info['entries'][0] if 'entries' in info and info['entries'] else info
@@ -401,14 +461,53 @@ class UniversalDownloader:
             )
             self.console.print(Panel(meta_info, title="[bold cyan]⬇️  Iniciando Descarga[/bold cyan]", border_style="cyan", expand=False))
 
-            # Ejecución de descarga con barra de progreso Rich
-            with progress_manager.progress:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.process_ie_result(info, download=True)
-                    filename = ydl.prepare_filename(video_entry)
-                    if audio_only:
-                        audio_ext = 'm4a' if audio_format.lower() == 'aac' else audio_format.lower()
-                        filename = str(Path(filename).with_suffix(f'.{audio_ext}'))
+            # Ejecución de descarga con barra de progreso Rich y fallback de streaming 403
+            download_done = False
+            candidates = [active_client] if active_client else []
+            for c_name in FALLBACK_PLAYER_CLIENTS:
+                if c_name not in candidates:
+                    candidates.append(c_name)
+
+            for cand_client in candidates:
+                if platform_type == PlatformType.YOUTUBE and cand_client:
+                    ext_args = dict(ydl_opts.get('extractor_args', {}))
+                    yt_args = dict(ext_args.get('youtube', {}))
+                    yt_args['player_client'] = [cand_client]
+                    ext_args['youtube'] = yt_args
+                    ydl_opts['extractor_args'] = ext_args
+
+                try:
+                    with progress_manager.progress:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            ydl.process_ie_result(info, download=True)
+                            filename = ydl.prepare_filename(video_entry)
+                            if audio_only:
+                                audio_ext = 'm4a' if audio_format.lower() == 'aac' else audio_format.lower()
+                                filename = str(Path(filename).with_suffix(f'.{audio_ext}'))
+                    download_done = True
+                    break
+                except Exception as stream_err:
+                    err_str = str(stream_err).lower()
+                    if ("403" in err_str or "forbidden" in err_str) and platform_type == PlatformType.YOUTUBE and cand_client != candidates[-1]:
+                        self.console.print(f"[dim cyan]ℹ️ Error 403 en streaming. Rotando a cliente: '{candidates[candidates.index(cand_client)+1]}'[/dim cyan]")
+                        # Re-extraer metadatos con el nuevo cliente para refrescar URLs de stream
+                        next_client = candidates[candidates.index(cand_client)+1]
+                        ext_args = dict(ydl_opts.get('extractor_args', {}))
+                        yt_args = dict(ext_args.get('youtube', {}))
+                        yt_args['player_client'] = [next_client]
+                        ext_args['youtube'] = yt_args
+                        ydl_opts['extractor_args'] = ext_args
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl_refresh:
+                            refreshed_info = ydl_refresh.extract_info(url, download=False)
+                            if refreshed_info:
+                                info = refreshed_info
+                                video_entry = info['entries'][0] if 'entries' in info and info['entries'] else info
+                        continue
+                    else:
+                        raise stream_err
+
+            if not download_done:
+                return False
 
             # Obtener tamaño real en disco si existe
             saved_path = Path(filename)
@@ -452,14 +551,25 @@ class UniversalDownloader:
         write_subs: bool = False,
         cookies_from: Optional[str] = None,
         cookies_file: Optional[str] = None,
-        skip_errors: bool = False,
+        skip_errors: bool = True,
+        abort_on_error: bool = False,
         start_from: int = 1,
         use_archive: Optional[bool] = None,
         notify: bool = True,
         organize_by_platform: Optional[bool] = None,
+        sleep_interval: Optional[float] = None,
+        max_sleep_interval: Optional[float] = None,
+        interactive: bool = False,
+        max_retries: int = 3,
     ) -> bool:
         """
-        Descarga una playlist, set, álbum o colección de cualquier plataforma en orden con barras de progreso Rich
+        Descarga una playlist, set, álbum o colección de cualquier plataforma de forma resiliente y tolerante a fallos:
+        - Aislamiento de errores por elemento individual (skip_errors=True por defecto)
+        - Reintentos automáticos con retroceso exponencial (exponential backoff)
+        - Rotación automática de clientes YouTube ante 403 Forbidden / desafíos antibot
+        - Control de pausas con jitter aleatorio (--sleep-interval y --max-sleep-interval)
+        - Menú de recuperación interactiva ante bloqueos en terminal TTY
+        - Tabla Rich estructurada de auditoría post-ejecución con resumen global
         """
         try:
             platform_type, platform_name, badge_rich = detect_platform(url)
@@ -528,105 +638,258 @@ class UniversalDownloader:
                 f"[bold white]▶️  Inicio:[/bold white] [green]Elemento #{start_from}[/green]\n"
                 f"[bold white]📁 Carpeta:[/bold white] [dim]{playlist_folder}[/dim]"
             )
-            self.console.print(Panel(p_info, title=f"[bold cyan]📋 Descarga de Lista ({platform_name})[/bold cyan]", border_style="cyan", expand=False))
+            self.console.print(Panel(p_info, title=f"[bold cyan]📋 Descarga Resiliente de Lista ({platform_name})[/bold cyan]", border_style="cyan", expand=False))
             
             has_ffmpeg = shutil.which('ffmpeg') is not None
             playlist_progress = RichPlaylistProgress(self.console)
             playlist_progress.setup(total_videos, playlist_title)
-            logger = YtDlpQuietLogger()
 
-            ydl_opts: Dict[str, Any] = {
-                'format': self._get_format_string(quality, audio_only, allow_merge=has_ffmpeg, platform=platform_type),
-                'outtmpl': str(playlist_folder / '%(playlist_index)03d - %(title)s.%(ext)s'),
-                'quiet': True,
-                'no_warnings': True,
-                'noprogress': True,
-                'logger': logger,
-                'progress_hooks': [playlist_progress.hook],
-                'postprocessor_hooks': [playlist_progress.postprocessor_hook],
-                'socket_timeout': 30,
-                'ignoreerrors': skip_errors,
-                'noplaylist': False,
-                'yes_playlist': True,
-                'playliststart': start_from,
-                'playlistreverse': False,
-                'playlistrandom': False,
-                'concurrent_fragment_downloads': 6,
-                'retries': 10,
-                'fragment_retries': 10,
-                'extractor_retries': 5,
-                'file_access_retries': 5,
-                'extractor_args': self._get_extractor_args(platform_type),
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                },
-            }
-            
-            if archive_active and self.archive_file:
-                ydl_opts['download_archive'] = str(self.archive_file)
-            if self.js_runtimes and platform_type == PlatformType.YOUTUBE:
-                ydl_opts['js_runtimes'] = self.js_runtimes
-            if has_ffmpeg and not audio_only:
-                ydl_opts['ffmpeg_location'] = shutil.which('ffmpeg')
-                ydl_opts['merge_output_format'] = 'mp4'
-            
-            ydl_opts.update(cookie_opts)
-            
-            if audio_only:
-                if embed_thumbnail:
-                    ydl_opts['writethumbnail'] = True
-                ydl_opts['postprocessors'] = self._get_audio_postprocessors(
-                    audio_format=audio_format,
-                    audio_quality=audio_quality,
-                    embed_thumbnail=embed_thumbnail
-                )
-            
-            # Subtítulos
-            if subtitles and not audio_only:
-                langs = [l.strip() for l in sub_lang.split(',') if l.strip()]
-                ydl_opts['writesubtitles'] = True
-                ydl_opts['writeautomaticsub'] = True
-                ydl_opts['subtitleslangs'] = langs if langs else ['es', 'en', 'es-419']
-                ydl_opts['subtitlesformat'] = 'srt/vtt/best'
-                if embed_subs and has_ffmpeg:
-                    ydl_opts['embedsubtitles'] = True
-                if write_subs or not embed_subs:
-                    if has_ffmpeg:
-                        ydl_opts.setdefault('postprocessors', []).append({
-                            'key': 'FFmpegSubtitlesConvertor',
-                            'format': 'srt'
-                        })
-            
-            try:
-                with Live(playlist_progress.group, console=self.console, refresh_per_second=10, vertical_overflow="crop", transient=False):
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
-            except Exception as e:
-                if not skip_errors:
-                    handle_download_error(e, url, console_instance=self.console)
-                    return False
+            # Preparar cola y estructura de auditoría
+            effective_abort = abort_on_error or (not skip_errors)
+            items_to_download = [(i, entry) for i, entry in enumerate(entries, 1) if i >= start_from]
+            results: List[Dict[str, Any]] = []
 
-            # Contar archivos en la carpeta
-            downloaded_files = list(playlist_folder.glob('*'))
-            downloaded_count = len([f for f in downloaded_files if f.is_file()])
-            
-            print_success(
-                "¡Proceso de lista completado!",
-                f"📊 Elementos guardados: {downloaded_count} de {total_videos} elementos\n"
-                f"📁 Carpeta de destino: {playlist_folder}",
-                console_instance=self.console
+            # Loop aislado por elemento con retroceso exponencial y rotación
+            for loop_idx, (item_num, entry) in enumerate(items_to_download):
+                # Aplicar pausa con jitter aleatorio entre elementos consecutivos
+                if loop_idx > 0:
+                    pacing_delay = calculate_pacing_delay(sleep_interval, max_sleep_interval, default_pacing=True)
+                    if pacing_delay > 0:
+                        time.sleep(pacing_delay)
+
+                item_url = entry.get('url') or entry.get('webpage_url') or entry.get('original_url') or url
+                if not str(item_url).startswith('http'):
+                    if platform_type == PlatformType.YOUTUBE and entry.get('id'):
+                        item_url = f"https://www.youtube.com/watch?v={entry['id']}"
+                    elif entry.get('id'):
+                        item_url = entry['id']
+                    else:
+                        item_url = url
+
+                item_title = entry.get('title') or f"Elemento #{item_num}"
+                item_success = False
+                item_skipped = False
+                item_reason = ""
+                start_item_time = time.time()
+
+                # Estado de rotación de cliente y cookies para este elemento
+                curr_client = None
+                curr_cookies_from = cookies_from
+                curr_cookies_file = cookies_file
+                client_candidates = list(FALLBACK_PLAYER_CLIENTS) if platform_type == PlatformType.YOUTUBE else [None]
+                client_idx = 0
+
+                for attempt in range(max_retries):
+                    if attempt > 0:
+                        backoff = (2 ** attempt) * 1.0
+                        time.sleep(backoff)
+
+                    logger = YtDlpQuietLogger()
+                    item_ydl_opts: Dict[str, Any] = {
+                        'format': self._get_format_string(quality, audio_only, allow_merge=has_ffmpeg, platform=platform_type),
+                        'outtmpl': str(playlist_folder / f'{item_num:03d} - %(title)s.%(ext)s'),
+                        'quiet': True,
+                        'no_warnings': True,
+                        'noprogress': True,
+                        'noplaylist': True,
+                        'logger': logger,
+                        'progress_hooks': [playlist_progress.hook],
+                        'postprocessor_hooks': [playlist_progress.postprocessor_hook],
+                        'socket_timeout': 30,
+                        'concurrent_fragment_downloads': 6,
+                        'retries': 5,
+                        'fragment_retries': 5,
+                        'extractor_retries': 3,
+                        'file_access_retries': 3,
+                        'extractor_args': self._get_extractor_args(platform_type),
+                        'http_headers': {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                        },
+                    }
+
+                    if archive_active and self.archive_file:
+                        item_ydl_opts['download_archive'] = str(self.archive_file)
+                    if self.js_runtimes and platform_type == PlatformType.YOUTUBE:
+                        item_ydl_opts['js_runtimes'] = self.js_runtimes
+                    if has_ffmpeg and not audio_only:
+                        item_ydl_opts['ffmpeg_location'] = shutil.which('ffmpeg')
+                        item_ydl_opts['merge_output_format'] = 'mp4'
+
+                    if audio_only:
+                        if embed_thumbnail:
+                            item_ydl_opts['writethumbnail'] = True
+                        item_ydl_opts['postprocessors'] = self._get_audio_postprocessors(
+                            audio_format=audio_format,
+                            audio_quality=audio_quality,
+                            embed_thumbnail=embed_thumbnail
+                        )
+
+                    if subtitles and not audio_only:
+                        langs = [l.strip() for l in sub_lang.split(',') if l.strip()]
+                        item_ydl_opts['writesubtitles'] = True
+                        item_ydl_opts['writeautomaticsub'] = True
+                        item_ydl_opts['subtitleslangs'] = langs if langs else ['es', 'en', 'es-419']
+                        item_ydl_opts['subtitlesformat'] = 'srt/vtt/best'
+                        if embed_subs and has_ffmpeg:
+                            item_ydl_opts['embedsubtitles'] = True
+                        if write_subs or not embed_subs:
+                            if has_ffmpeg:
+                                item_ydl_opts.setdefault('postprocessors', []).append({
+                                    'key': 'FFmpegSubtitlesConvertor',
+                                    'format': 'srt'
+                                })
+
+                    # Configurar cookies
+                    item_cookie_opts = self._get_cookie_opts(
+                        url=item_url,
+                        cookies_from=curr_cookies_from,
+                        cookies_file=curr_cookies_file
+                    )
+                    item_ydl_opts.update(item_cookie_opts)
+
+                    # Configurar cliente rotativo si aplica
+                    if curr_client and platform_type == PlatformType.YOUTUBE:
+                        ext_args = dict(item_ydl_opts.get('extractor_args', {}))
+                        yt_args = dict(ext_args.get('youtube', {}))
+                        yt_args['player_client'] = [curr_client]
+                        ext_args['youtube'] = yt_args
+                        item_ydl_opts['extractor_args'] = ext_args
+
+                    try:
+                        with yt_dlp.YoutubeDL(item_ydl_opts) as item_ydl:
+                            item_ydl.download([item_url])
+                        item_success = True
+                        item_reason = f"Completado ({time.time() - start_item_time:.1f}s)"
+                        break
+                    except Exception as ex:
+                        err_str = str(ex)
+                        err_lower = err_str.lower()
+                        item_reason = err_str
+
+                        is_403_or_bot = "403" in err_str or "forbidden" in err_lower or any(
+                            k in err_lower for k in ("bot", "sign in", "confirm you", "n challenge", "potoken", "po_token", "rate-limit", "rate limit", "429")
+                        )
+
+                        # Intentar rotación de clientes si es YouTube y error 403
+                        if is_403_or_bot and platform_type == PlatformType.YOUTUBE and client_idx < len(client_candidates) - 1:
+                            client_idx += 1
+                            curr_client = client_candidates[client_idx]
+                            self.console.print(f"[dim cyan]ℹ️ Reintentando elemento #{item_num} con cliente YouTube: '{curr_client}'[/dim cyan]")
+                            continue
+
+                        # Si se agotó la rotación o no es YouTube, verificar recuperación interactiva
+                        if is_403_or_bot and interactive and hasattr(sys.stdin, 'isatty') and sys.stdin.isatty():
+                            recovery = prompt_interactive_recovery(
+                                item_url,
+                                failed_client=curr_client,
+                                failed_cookie_source=curr_cookies_from or curr_cookies_file,
+                                console_instance=self.console
+                            )
+                            if recovery:
+                                if recovery.get('action') == 'retry_client':
+                                    curr_client = recovery.get('client')
+                                    continue
+                                elif recovery.get('action') == 'retry_cookies_browser':
+                                    curr_cookies_from = recovery.get('browser')
+                                    continue
+                                elif recovery.get('action') == 'retry_cookies_file':
+                                    curr_cookies_file = recovery.get('file')
+                                    continue
+                                elif recovery.get('action') == 'retry_no_cookies':
+                                    curr_cookies_from = None
+                                    curr_cookies_file = None
+                                    continue
+                                elif recovery.get('action') == 'skip':
+                                    item_skipped = True
+                                    item_reason = "Omitido por el usuario"
+                                    break
+                                elif recovery.get('action') == 'abort':
+                                    item_reason = "Abortado por el usuario"
+                                    break
+
+                        # Si es error transitorio y quedan intentos, continuar retroceso
+                        is_transient = any(k in err_lower for k in ("timeout", "timed out", "connection reset", "connection refused", "502", "503", "504", "temporary"))
+                        if is_transient and attempt < max_retries - 1:
+                            continue
+
+                # Registrar resultado del elemento
+                if item_success:
+                    status_str = "success"
+                elif item_skipped:
+                    status_str = "skipped"
+                else:
+                    status_str = "failed"
+
+                results.append({
+                    'index': item_num,
+                    'title': item_title,
+                    'status': status_str,
+                    'reason': item_reason,
+                    'url': item_url,
+                })
+
+                playlist_progress.advance_overall(item_num)
+
+                # Si falló y abort_on_error está activo, detener la lista
+                if status_str == "failed" and effective_abort:
+                    self.console.print(f"[bold red]❌ Deteniendo lista tras fallo en elemento #{item_num} (abort-on-error activo).[/bold red]")
+                    break
+                if item_reason == "Abortado por el usuario":
+                    break
+
+            # =========================================================================
+            # Renderizado de Tabla Rich de Auditoría Post-Ejecución
+            # =========================================================================
+            audit_table = Table(
+                title=f"[bold cyan]📋 Resumen de Auditoría de Lista ({playlist_title})[/bold cyan]",
+                header_style="bold magenta",
+                border_style="cyan"
             )
+            audit_table.add_column("#", style="dim", justify="center")
+            audit_table.add_column("Título / Elemento", style="bold white", justify="left")
+            audit_table.add_column("Estado", justify="center")
+            audit_table.add_column("Detalles / Causa", justify="left")
+
+            for r in results:
+                short_title = r['title'] if len(r['title']) <= 45 else r['title'][:42] + "..."
+                short_reason = r['reason'] if len(r['reason']) <= 50 else r['reason'][:47] + "..."
+                if r['status'] == 'success':
+                    audit_table.add_row(str(r['index']), short_title, "[bold green]✅ Éxito[/bold green]", f"[green]{short_reason}[/green]")
+                elif r['status'] == 'skipped':
+                    audit_table.add_row(str(r['index']), short_title, "[bold yellow]⚠️ Omitido[/bold yellow]", f"[yellow]{short_reason}[/yellow]")
+                else:
+                    audit_table.add_row(str(r['index']), short_title, "[bold red]❌ Fallido[/bold red]", f"[red]{short_reason}[/red]")
+
+            self.console.print()
+            self.console.print(audit_table)
+            self.console.print()
+
+            succeeded_count = sum(1 for r in results if r['status'] == 'success')
+            failed_count = sum(1 for r in results if r['status'] == 'failed')
+            skipped_count = sum(1 for r in results if r['status'] == 'skipped')
+            total_processed = len(results)
+
+            if succeeded_count > 0:
+                summary_msg = f"✅ Guardados con éxito: {succeeded_count} de {total_videos} elementos."
+                if failed_count > 0:
+                    summary_msg += f"\n❌ Fallidos: {failed_count}"
+                if skipped_count > 0:
+                    summary_msg += f"\n⚠️ Omitidos: {skipped_count}"
+                summary_msg += f"\n📁 Carpeta de destino: {playlist_folder}"
+                print_success("¡Proceso de lista completado!", summary_msg, console_instance=self.console)
+            else:
+                print_error("Fallo en descarga de lista", f"No se pudo descargar ningún elemento ({failed_count} fallidos de {total_processed} intentados).", console_instance=self.console)
 
             # Notificación Windows Toast
             if notify:
                 notif_title = get_notification_title(platform_type, audio_only=audio_only, is_playlist=True)
                 show_desktop_notification(
                     notif_title,
-                    f"{playlist_title}\nGuardados: {downloaded_count}/{total_videos} elementos",
+                    f"{playlist_title}\nÉxito: {succeeded_count}/{total_videos} | Fallidos: {failed_count}",
                     playlist_folder
                 )
 
-            return True
+            return succeeded_count > 0 or (total_processed > 0 and failed_count == 0)
             
         except Exception as e:
             handle_download_error(e, url, console_instance=self.console)
@@ -651,12 +914,17 @@ class UniversalDownloader:
         concurrency: int = 2,
         delay: float = 1.0,
         organize_by_platform: Optional[bool] = None,
+        sleep_interval: Optional[float] = None,
+        max_sleep_interval: Optional[float] = None,
+        abort_on_error: bool = False,
+        interactive: bool = False,
     ) -> bool:
         """
         Descarga múltiples medios desde un archivo de texto con URLs de cualquier plataforma soportando:
         - Concurrencia multihilo controlada (ThreadPoolExecutor) con --concurrency / -w
-        - Control de pausas con jitter aleatorio inteligente (--delay / -d ±0.5s) para evitar límites de tasa
+        - Control de pausas con jitter aleatorio inteligente (--sleep-interval, --max-sleep-interval o --delay)
         - Barras de progreso simultáneas en paralelo con Rich
+        - Resumen de auditoría de lote
         """
         try:
             p = Path(file_path)
@@ -676,14 +944,15 @@ class UniversalDownloader:
             target_folder = self.audios_path if audio_only else self.videos_path
             workers = max(1, min(concurrency, len(urls), 8))
 
+            effective_sleep = sleep_interval if sleep_interval is not None else delay
+            pacing_label = f" • Pausa con jitter: {effective_sleep}s" if effective_sleep > 0 or max_sleep_interval else ""
             tipo_desc = f"Audio {audio_format.upper()} ({audio_quality} kbps)" if audio_only else f"Video {quality}p"
             subs_tag = f" • Subtítulos: {sub_lang}" if subtitles and not audio_only else ""
-            delay_tag = f" • Pausa entre hilos: {delay}s (±0.5s jitter)" if delay > 0 else ""
             
             self.console.print(Panel(
                 f"[bold white]📋 Archivo de lote:[/bold white] [bold cyan]{file_path}[/bold cyan]\n"
                 f"[bold white]📊 Total URLs a descargar:[/bold white] [yellow]{len(urls)}[/yellow]    "
-                f"[bold white]⚡ Concurrencia:[/bold white] [green]{workers} workers simultáneos[/green]{delay_tag}\n"
+                f"[bold white]⚡ Concurrencia:[/bold white] [green]{workers} workers simultáneos[/green]{pacing_label}\n"
                 f"[bold white]⚙️  Formato de salida:[/bold white] [magenta]{tipo_desc}{subs_tag}[/magenta]\n"
                 f"[bold white]📁 Carpeta de destino:[/bold white] [dim]{target_folder}[/dim]",
                 title="[bold cyan]📦 Descarga en Lote Concurrente Universal[/bold cyan]",
@@ -702,10 +971,14 @@ class UniversalDownloader:
                 item_platform, item_plat_name, _ = detect_platform(url)
 
                 # Pausa inteligente con jitter aleatorio para no saturar IP
-                if delay > 0 and item_idx > 1:
-                    jitter = random.uniform(-0.5, 0.5)
-                    sleep_duration = max(0.0, delay + jitter)
-                    time.sleep(sleep_duration)
+                if item_idx > 1:
+                    sleep_dur = calculate_pacing_delay(
+                        sleep_interval=effective_sleep,
+                        max_sleep_interval=max_sleep_interval,
+                        default_pacing=(effective_sleep > 0)
+                    )
+                    if sleep_dur > 0:
+                        time.sleep(sleep_dur)
 
                 progress_hook, postprocessor_hook, cleanup = batch_progress.create_hooks_for_item(
                     item_idx=item_idx,
