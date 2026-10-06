@@ -2,8 +2,18 @@
 Módulo de interfaz de consola enriquecida con Rich (paneles, tablas, banners y mensajes de error).
 """
 
+import os
 import sys
 from typing import Optional, Dict, Any
+
+# Asegurar soporte de encoding UTF-8 en Windows para caracteres especiales y emojis Rich
+if sys.platform == "win32":
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from rich.console import Console
 from rich.panel import Panel
 
@@ -139,7 +149,7 @@ def handle_download_error(e: Exception, context_url: str = "", console_instance:
             "El tweet contiene material sensible (NSFW), requiere sesión activa para visualizarse, pertenece a una cuenta protegida o ha sido eliminado.\n\n"
             "💡 [bold cyan]Soluciones recomendadas:[/bold cyan]\n"
             "  1. Autentica con tu navegador: [bold white]--cookies-from chrome[/bold white] (o firefox, edge)\n"
-            "  2. O guarda tus cookies en [bold white]cookies_twitter.txt[/bold white] o [bold white]cookies.txt[/bold white].\n"
+            "  2. O guarda tus cookies en [bold white]cookies_twitter.txt[/bold white], [bold white]cookies_x.txt[/bold white] o [bold white]cookies.txt[/bold white].\n"
             "  3. Verifica en el navegador que el tweet aún exista y esté visible públicamente.",
             console_instance=c
         )
