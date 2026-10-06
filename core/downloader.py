@@ -6,6 +6,7 @@ Bandcamp, Vimeo, Kick, streams directos HLS/DASH y web genérica.
 """
 
 import os
+import re
 import sys
 import shutil
 import time
@@ -13,7 +14,7 @@ import random
 import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Set
 
 import yt_dlp
 from rich.console import Console
@@ -139,6 +140,75 @@ class UniversalDownloader:
             self.js_runtimes['node'] = {}
         if shutil.which('bun'):
             self.js_runtimes['bun'] = {}
+
+    def _extract_possible_ids_from_url(self, url: str) -> List[str]:
+        """Extrae posibles identificadores de medios a partir de la URL para cotejo con download_archive."""
+        if not url:
+            return []
+        ids: Set[str] = set()
+        clean_url = url.strip()
+
+        # Twitter / X: status/123456789
+        m_tw = re.search(r'(?:twitter\.com|x\.com)/(?:[^/]+/status/|status/|i/web/status/)(\d+)', clean_url)
+        if m_tw:
+            ids.add(m_tw.group(1))
+
+        # YouTube: watch?v=ID, youtu.be/ID, shorts/ID, embed/ID
+        m_yt = re.search(r'(?:youtu\.be/|youtube\.com/(?:watch\?(?:.*&)?v=|embed/|v/|shorts/))([a-zA-Z0-9_-]{11})', clean_url)
+        if m_yt:
+            ids.add(m_yt.group(1))
+
+        # Instagram: /p/ID, /reel/ID, /tv/ID
+        m_ig = re.search(r'instagram\.com/(?:p|reel|tv)/([a-zA-Z0-9_-]+)', clean_url)
+        if m_ig:
+            ids.add(m_ig.group(1))
+
+        # TikTok: /video/123456789
+        m_tt = re.search(r'tiktok\.com/@[^/]+/video/(\d+)', clean_url)
+        if m_tt:
+            ids.add(m_tt.group(1))
+
+        # Twitch: /videos/123456789
+        m_tw_vid = re.search(r'twitch\.tv/videos/(\d+)', clean_url)
+        if m_tw_vid:
+            v_id = m_tw_vid.group(1)
+            ids.add(v_id)
+            ids.add(f"v{v_id}")
+
+        # Último segmento alfanumérico del path si parece un ID
+        try:
+            from urllib.parse import urlparse
+            path = urlparse(clean_url).path.rstrip('/')
+            if path:
+                last_segment = path.split('/')[-1]
+                if last_segment and len(last_segment) >= 4 and not last_segment.endswith(('.html', '.php', '.asp')):
+                    ids.add(last_segment)
+        except Exception:
+            pass
+
+        return list(ids)
+
+    def _is_in_download_archive(self, url: str) -> bool:
+        """Determina si la URL o el ID de medio ya se encuentra registrado en el archivo .download_archive.txt."""
+        if not self.archive_file or not self.archive_file.exists():
+            return False
+        try:
+            candidate_ids = set(self._extract_possible_ids_from_url(url))
+            with open(self.archive_file, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith('#'):
+                        continue
+                    parts = stripped.split()
+                    if len(parts) >= 2:
+                        archive_id = parts[1]
+                        if archive_id in candidate_ids:
+                            return True
+                    if url in stripped or (len(parts) == 1 and parts[0] in candidate_ids):
+                        return True
+        except Exception:
+            return False
+        return False
 
     def _get_target_folder(
         self,
@@ -441,8 +511,17 @@ class UniversalDownloader:
                     )
             
             if info is None:
-                print_info_panel("El contenido ya fue descargado previamente o no se pudo acceder a los metadatos.", "Información", console_instance=self.console)
-                return True
+                # Comprobar si se trata de un elemento ya registrado en el download_archive
+                if archive_active and self._is_in_download_archive(url):
+                    print_info_panel(
+                        "El contenido ya fue descargado previamente (registrado en el historial de descargas).",
+                        "Descarga Omitida",
+                        console_instance=self.console
+                    )
+                    return True
+
+                # Si no está en el archive, es un fallo real de extracción de metadatos
+                return False
 
             video_entry = info['entries'][0] if 'entries' in info and info['entries'] else info
             title = video_entry.get('title', 'Desconocido')
