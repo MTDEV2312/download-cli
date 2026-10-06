@@ -72,10 +72,57 @@ AUDIT_COOKIE_TARGETS: List[Tuple[str, str, Optional[PlatformType]]] = [
     ("cookies_instagram.txt", "📸 Instagram", PlatformType.INSTAGRAM),
     ("cookies_tiktok.txt", "🎵 TikTok", PlatformType.TIKTOK),
     ("cookies_twitter.txt", "🐦 Twitter / X", PlatformType.TWITTER),
+    ("cookies_x.txt", "🐦 X (Twitter)", PlatformType.TWITTER),
     ("cookies_twitch.txt", "🟣 Twitch", PlatformType.TWITCH),
     ("cookies_facebook.txt", "🔵 Facebook", PlatformType.FACEBOOK),
     ("cookies_reddit.txt", "🟠 Reddit", PlatformType.REDDIT),
 ]
+
+# Configuración de dominios relevantes y tokens clave de autenticación e invitado por plataforma
+PLATFORM_AUTH_TOKENS: Dict[PlatformType, Dict[str, Any]] = {
+    PlatformType.TWITTER: {
+        'domains': ['twitter.com', 'x.com', 't.co'],
+        'auth_tokens': {'auth_token'},
+        'guest_tokens': {'guest_id', 'guest_id_marketing', 'guest_id_ads'},
+        'auth_label': 'auth_token',
+    },
+    PlatformType.INSTAGRAM: {
+        'domains': ['instagram.com', 'instagr.am'],
+        'auth_tokens': {'sessionid'},
+        'guest_tokens': {'mid', 'ig_did', 'csrftoken'},
+        'auth_label': 'sessionid',
+    },
+    PlatformType.YOUTUBE: {
+        'domains': ['youtube.com', 'google.com', 'googlevideo.com', 'youtu.be'],
+        'auth_tokens': {'sapisid', '__secure-1papisid', '__secure-3papisid', 'login_info', 'sid', 'hsid', 'ssid'},
+        'guest_tokens': {'visitor_info1_live', 'pref', 'ysc', 'gps'},
+        'auth_label': 'SAPISID / LOGIN_INFO',
+    },
+    PlatformType.TIKTOK: {
+        'domains': ['tiktok.com'],
+        'auth_tokens': {'sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt'},
+        'guest_tokens': {'ttwid', 'mstoken'},
+        'auth_label': 'sessionid',
+    },
+    PlatformType.TWITCH: {
+        'domains': ['twitch.tv'],
+        'auth_tokens': {'auth-token', 'login', 'twilight-user', 'api_token', 'persistent'},
+        'guest_tokens': {'unique_id', 'unique_id_durable'},
+        'auth_label': 'auth-token',
+    },
+    PlatformType.FACEBOOK: {
+        'domains': ['facebook.com', 'fb.com'],
+        'auth_tokens': {'c_user', 'xs'},
+        'guest_tokens': {'datr', 'sb'},
+        'auth_label': 'c_user / xs',
+    },
+    PlatformType.REDDIT: {
+        'domains': ['reddit.com', 'redd.it'],
+        'auth_tokens': {'reddit_session', 'token_v2'},
+        'guest_tokens': {'edgebucket'},
+        'auth_label': 'reddit_session',
+    },
+}
 
 
 def parse_browser_spec(cookies_from: str) -> Tuple[str, Optional[str]]:
@@ -194,25 +241,213 @@ def extract_cookies_lock_safe(browser_name: str, profile: Optional[str] = None) 
         return None
 
 
-def find_cookie_file(filename: str) -> Optional[Path]:
+def inspect_cookie_file(file_path: Path, platform: Optional[PlatformType] = None) -> Dict[str, Any]:
+    """
+    Inspecciona un archivo de cookies Netscape analizando:
+    - Cantidad total de cookies y tamaño en bytes
+    - Coincidencia con dominios clave de la plataforma
+    - Presencia de tokens de autenticación activos (ej. auth_token para Twitter/X, sessionid para Instagram, SAPISID/LOGIN_INFO para YouTube)
+    - Presencia de tokens de invitado (ej. guest_id)
+    - Puntuación de autenticación para resolución inteligente
+    """
+    result: Dict[str, Any] = {
+        'path': file_path,
+        'total_cookies': 0,
+        'size_bytes': 0,
+        'domain_cookies_count': 0,
+        'auth_tokens_found': set(),
+        'guest_tokens_found': set(),
+        'has_auth': False,
+        'has_guest': False,
+        'status_label': 'No presente',
+        'score': 0,
+    }
+
+    if not file_path.exists():
+        return result
+
+    try:
+        result['size_bytes'] = file_path.stat().st_size
+    except Exception:
+        pass
+
+    cfg = PLATFORM_AUTH_TOKENS.get(platform) if platform else None
+    domains = [d.lower() for d in cfg['domains']] if cfg else []
+    auth_tokens = {t.lower() for t in cfg['auth_tokens']} if cfg else set()
+    guest_tokens = {t.lower() for t in cfg['guest_tokens']} if cfg else set()
+
+    total_valid = 0
+    domain_count = 0
+    auth_found: Set[str] = set()
+    guest_found: Set[str] = set()
+
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if stripped.startswith('#'):
+                    if stripped.startswith('#HttpOnly_'):
+                        stripped = stripped[len('#HttpOnly_'):].strip()
+                    else:
+                        continue
+
+                parts = stripped.split('\t')
+                if len(parts) < 7:
+                    parts = stripped.split()
+                    if len(parts) < 7:
+                        continue
+
+                total_valid += 1
+                domain = parts[0].lower()
+                c_name = parts[5].strip()
+                c_name_lower = c_name.lower()
+                c_val = parts[6].strip() if len(parts) > 6 else ""
+
+                if not c_val:
+                    continue
+
+                if cfg:
+                    if any(d in domain for d in domains):
+                        domain_count += 1
+                        if c_name_lower in auth_tokens:
+                            auth_found.add(c_name)
+                        elif c_name_lower in guest_tokens:
+                            guest_found.add(c_name)
+                else:
+                    for p_t, p_cfg in PLATFORM_AUTH_TOKENS.items():
+                        if any(d in domain for d in p_cfg['domains']):
+                            domain_count += 1
+                            if c_name_lower in {t.lower() for t in p_cfg['auth_tokens']}:
+                                auth_found.add(c_name)
+                            elif c_name_lower in {t.lower() for t in p_cfg['guest_tokens']}:
+                                guest_found.add(c_name)
+    except Exception:
+        return result
+
+    result['total_cookies'] = total_valid
+    result['domain_cookies_count'] = domain_count
+    result['auth_tokens_found'] = auth_found
+    result['guest_tokens_found'] = guest_found
+    result['has_auth'] = len(auth_found) > 0
+    result['has_guest'] = len(guest_found) > 0
+
+    score = 0
+    if platform and domain_count == 0 and total_valid > 0:
+        score = 0
+    else:
+        if auth_found:
+            score += 1000 + len(auth_found) * 10
+        elif guest_found:
+            score += 50 + len(guest_found) * 5
+        elif domain_count > 0:
+            score += 10
+        elif total_valid > 0:
+            score += 1
+
+        score += min(domain_count, 100)
+
+    result['score'] = score
+
+    if total_valid == 0:
+        result['status_label'] = 'Archivo vacío'
+    elif auth_found:
+        tokens_str = ", ".join(sorted(auth_found))
+        result['status_label'] = f"Sesión activa ({tokens_str})"
+    elif guest_found:
+        tokens_str = ", ".join(sorted(guest_found))
+        result['status_label'] = f"Invitado / Guest ({tokens_str})"
+    elif domain_count > 0:
+        result['status_label'] = "Cookies de dominio (sin sesión activa)"
+    else:
+        result['status_label'] = "Sin cookies del dominio"
+
+    return result
+
+
+def find_cookie_file(filename: Optional[str] = None, platform: Optional[PlatformType] = None) -> Optional[Path]:
     """
     Busca un archivo de cookies con resolución inteligente:
-    1. Si es una ruta directa existente (absoluta o relativa)
-    2. Dentro de la carpeta 'cookies/' (ej. cookies/cookies_youtube.txt)
-    3. En el directorio raíz del proyecto (fallback de compatibilidad)
+    1. Si se proporciona platform (o se infiere) y no hay filename único:
+       Evalúa todos los candidatos de la plataforma, califica su relevancia de dominio y tokens
+       de sesión activos (ej. auth_token para Twitter/X), seleccionando el candidato con mayor
+       puntuación de autenticación y preservando el orden estándar en caso de empate.
+    2. Si se proporciona filename:
+       Busca candidatos en:
+       - Ruta directa existente (absoluta o relativa)
+       - Dentro de la carpeta 'cookies/' (ej. cookies/cookies_youtube.txt)
+       - En el directorio raíz del proyecto (fallback de compatibilidad)
+       Si existen múltiples ubicaciones para el archivo, evalúa su puntuación de autenticación
+       y retorna el mejor candidato (preservando el orden de ubicación en caso de empate).
     """
-    if not filename:
+    if not filename and not platform:
         return None
-    p_direct = Path(filename)
-    if p_direct.exists():
-        return p_direct
-    p_in_cookies = COOKIES_DIR / p_direct.name
-    if p_in_cookies.exists():
-        return p_in_cookies
-    p_in_root = Path(p_direct.name)
-    if p_in_root.exists():
-        return p_in_root
-    return None
+
+    if filename and not platform:
+        fn_lower = Path(filename).name.lower()
+        implied_platform = None
+        for p_t, p_files in PLATFORM_COOKIE_FILES.items():
+            if any(fn_lower == f.lower() for f in p_files):
+                implied_platform = p_t
+                break
+
+        candidates: List[Path] = []
+        p_direct = Path(filename)
+        if p_direct.exists():
+            candidates.append(p_direct)
+        p_in_cookies = COOKIES_DIR / p_direct.name
+        if p_in_cookies.exists():
+            candidates.append(p_in_cookies)
+        p_in_root = Path(p_direct.name)
+        if p_in_root.exists():
+            candidates.append(p_in_root)
+
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+
+        scored = []
+        for idx, cand in enumerate(candidates):
+            sc = inspect_cookie_file(cand, platform=implied_platform)['score']
+            scored.append((cand, sc, idx))
+        scored.sort(key=lambda x: (x[1], -x[2]), reverse=True)
+        return scored[0][0]
+
+    # Resolución cuando se especifica platform
+    target_names: List[str] = []
+    if filename:
+        target_names.append(Path(filename).name)
+    for p_file in PLATFORM_COOKIE_FILES.get(platform, []):
+        if p_file not in target_names:
+            target_names.append(p_file)
+
+    candidates_with_prio: List[Tuple[Path, int]] = []
+    seen: Set[str] = set()
+
+    for prio_idx, name in enumerate(target_names):
+        for loc in [COOKIES_DIR / name, Path(name)]:
+            if loc.exists():
+                try:
+                    r_str = str(loc.resolve()).lower()
+                except Exception:
+                    r_str = str(loc).lower()
+                if r_str not in seen:
+                    seen.add(r_str)
+                    candidates_with_prio.append((loc, prio_idx))
+
+    if not candidates_with_prio:
+        return None
+    if len(candidates_with_prio) == 1:
+        return candidates_with_prio[0][0]
+
+    scored = []
+    for cand, prio in candidates_with_prio:
+        sc = inspect_cookie_file(cand, platform=platform)['score']
+        scored.append((cand, sc, prio))
+    scored.sort(key=lambda x: (x[1], -x[2]), reverse=True)
+    return scored[0][0]
 
 
 def get_platform_cookie_files(platform: Optional[PlatformType] = None) -> List[str]:
@@ -234,7 +469,11 @@ def get_cookie_opts(
     Configura opciones de cookies con búsqueda en cascada inteligente multi-sitio:
     1. Archivo de cookies explícito pasado por parámetro (cookies_file o default_cookies_file)
     2. Navegador explícito pasado por parámetro (cookies_from o default_cookies_from), con soporte de perfiles (ej. 'brave:Default')
-    3. Archivo específico de la plataforma en cookies/ o raíz (ej. cookies/cookies_instagram.txt)
+    3. Archivo específico de la plataforma con selección inteligente:
+       Inspecciona los archivos candidatos evaluando relevancia de dominio y tokens de autenticación
+       activos (ej. auth_token para Twitter/X, sessionid para Instagram, SAPISID/LOGIN_INFO para YouTube).
+       Selecciona el candidato con la mayor puntuación de autenticación.
+       Si las puntuaciones son iguales o no hay tokens, preserva el orden estándar de fallback.
     4. Archivo genérico cookies/cookies.txt o cookies.txt
     5. Archivo legado cookies/youtube_cookies.txt o youtube_cookies.txt (para YouTube o fallback)
     """
@@ -250,7 +489,7 @@ def get_cookie_opts(
     # 1. Archivo de cookies explícito o por defecto
     target_file = cookies_file or default_cookies_file
     if target_file:
-        found_file = find_cookie_file(target_file)
+        found_file = find_cookie_file(target_file, platform=platform)
         if found_file:
             opts['cookiefile'] = str(found_file.resolve())
             return opts
@@ -267,13 +506,42 @@ def get_cookie_opts(
     if target_platform is None and url:
         target_platform = get_platform_info(url).type
 
-    # 3. Archivo específico de la plataforma si existe en disco (en cookies/ o en raíz)
+    # 3. Archivo específico de la plataforma con selección inteligente de candidatos
     if target_platform and target_platform in PLATFORM_COOKIE_FILES:
-        for filename in PLATFORM_COOKIE_FILES[target_platform]:
-            found_file = find_cookie_file(filename)
-            if found_file:
-                opts['cookiefile'] = str(found_file.resolve())
-                return opts
+        candidate_names = list(PLATFORM_COOKIE_FILES[target_platform])
+        if target_platform == PlatformType.YOUTUBE and "youtube_cookies.txt" not in candidate_names:
+            candidate_names.append("youtube_cookies.txt")
+        if "cookies.txt" not in candidate_names:
+            candidate_names.append("cookies.txt")
+
+        candidate_files: List[Tuple[Path, int]] = []
+        seen_paths: Set[str] = set()
+
+        for prio_idx, cand_name in enumerate(candidate_names):
+            for loc in [COOKIES_DIR / cand_name, Path(cand_name)]:
+                if loc.exists():
+                    try:
+                        resolved_str = str(loc.resolve()).lower()
+                    except Exception:
+                        resolved_str = str(loc).lower()
+                    if resolved_str not in seen_paths:
+                        seen_paths.add(resolved_str)
+                        candidate_files.append((loc, prio_idx))
+
+        if candidate_files:
+            scored_candidates = []
+            for file_path, prio in candidate_files:
+                inspection = inspect_cookie_file(file_path, platform=target_platform)
+                scored_candidates.append({
+                    'path': file_path,
+                    'score': inspection['score'],
+                    'priority': prio,
+                })
+
+            # Mayor puntuación de autenticación primero; menor índice de prioridad de fallback en empate
+            scored_candidates.sort(key=lambda x: (x['score'], -x['priority']), reverse=True)
+            opts['cookiefile'] = str(scored_candidates[0]['path'].resolve())
+            return opts
 
     # 4. Archivo genérico cookies.txt en cookies/ o directorio raíz
     generic_cookies = find_cookie_file('cookies.txt')
@@ -338,12 +606,30 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
         shown_filenames.add(filename.lower())
         found_path = find_cookie_file(filename)
         if found_path:
-            count, size = _count_valid_cookies_in_file(found_path)
+            inspection = inspect_cookie_file(found_path, platform=p_type)
+            count = inspection['total_cookies']
+            size = inspection['size_bytes']
+            
+            if inspection['has_auth']:
+                tokens_str = ", ".join(sorted(inspection['auth_tokens_found']))
+                status_str = "[bold green]✅ Sesión Activa[/bold green]"
+                detail_str = f"{count} cookies ({format_bytes(size)}) • [bold green]{tokens_str}[/bold green]"
+            elif inspection['has_guest']:
+                tokens_str = ", ".join(sorted(inspection['guest_tokens_found']))
+                status_str = "[bold yellow]⚠️ Sesión Invitado[/bold yellow]"
+                detail_str = f"{count} cookies ({format_bytes(size)}) • [yellow]Guest: {tokens_str}[/yellow]"
+            elif count > 0:
+                status_str = "[bold green]✅ Detectado[/bold green]"
+                detail_str = f"{count} cookies registradas ({format_bytes(size)})"
+            else:
+                status_str = "[bold yellow]⚠️ Archivo Vacío[/bold yellow]"
+                detail_str = f"0 cookies ({format_bytes(size)})"
+
             files_table.add_row(
                 f"📁 {found_path.as_posix()}",
                 description,
-                "[bold green]✅ Detectado y Activo[/bold green]",
-                f"{count} cookies registradas ({format_bytes(size)})"
+                status_str,
+                detail_str
             )
         else:
             files_table.add_row(
@@ -363,12 +649,29 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
         for extra_file in candidate_paths:
             if extra_file.name.lower() not in shown_filenames and extra_file.is_file():
                 shown_filenames.add(extra_file.name.lower())
-                count, size = _count_valid_cookies_in_file(extra_file)
+                inspection = inspect_cookie_file(extra_file)
+                count = inspection['total_cookies']
+                size = inspection['size_bytes']
+                if inspection['has_auth']:
+                    tokens_str = ", ".join(sorted(inspection['auth_tokens_found']))
+                    status_str = "[bold green]✅ Sesión Activa[/bold green]"
+                    detail_str = f"{count} cookies ({format_bytes(size)}) • [bold green]{tokens_str}[/bold green]"
+                elif inspection['has_guest']:
+                    tokens_str = ", ".join(sorted(inspection['guest_tokens_found']))
+                    status_str = "[bold yellow]⚠️ Sesión Invitado[/bold yellow]"
+                    detail_str = f"{count} cookies ({format_bytes(size)}) • [yellow]Guest: {tokens_str}[/yellow]"
+                elif count > 0:
+                    status_str = "[bold green]✅ Detectado[/bold green]"
+                    detail_str = f"{count} cookies registradas ({format_bytes(size)})"
+                else:
+                    status_str = "[bold yellow]⚠️ Archivo Vacío[/bold yellow]"
+                    detail_str = f"0 cookies ({format_bytes(size)})"
+
                 files_table.add_row(
                     f"📁 {extra_file.as_posix()}",
                     "Personalizado / Detectado",
-                    "[bold green]✅ Detectado[/bold green]",
-                    f"{count} cookies registradas ({format_bytes(size)})"
+                    status_str,
+                    detail_str
                 )
     except Exception:
         pass
@@ -506,7 +809,7 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
         "     - [bold white]cookies/cookies.txt[/bold white] (se aplicará como cookie universal a cualquier plataforma)\n"
         "     - [bold white]cookies/cookies_instagram.txt[/bold white] (específico para Instagram)\n"
         "     - [bold white]cookies/cookies_tiktok.txt[/bold white] (específico para TikTok)\n"
-        "     - [bold white]cookies/cookies_twitter.txt[/bold white] (específico para Twitter / X)\n"
+        "     - [bold white]cookies/cookies_twitter.txt[/bold white] o [bold white]cookies/cookies_x.txt[/bold white] (específico para Twitter / X)\n"
         "     - [bold white]cookies/cookies_youtube.txt[/bold white] o [bold white]cookies/youtube_cookies.txt[/bold white] (específico para YouTube)\n"
         "     - [bold white]cookies/cookies_twitch.txt[/bold white] (específico para Twitch)\n"
         "     - [bold white]cookies/cookies_facebook.txt[/bold white] (específico para Facebook)\n"
