@@ -29,6 +29,48 @@ from utils.platform_detector import (
 )
 
 
+def _apply_ytdlp_patches() -> None:
+    """
+    Aplica parches defensivos de compatibilidad sobre yt-dlp:
+    - En sitios como ok.ru (Odnoklassniki), ciertos campos anidados (ej. flashvars['metadata'])
+      pueden venir ya deserializados como dict/list en lugar de str, disparando TypeError en json.loads().
+    """
+    from yt_dlp.extractor.common import InfoExtractor
+
+    if getattr(InfoExtractor._parse_json, "_is_defensive_patched", False):
+        return
+
+    original_parse_json = InfoExtractor._parse_json
+
+    def _safe_parse_json(
+        self,
+        json_string,
+        video_id,
+        transform_source=None,
+        fatal=True,
+        errnote=None,
+        **parser_kwargs,
+    ):
+        if isinstance(json_string, (dict, list)):
+            return json_string
+        return original_parse_json(
+            self,
+            json_string,
+            video_id,
+            transform_source=transform_source,
+            fatal=fatal,
+            errnote=errnote,
+            **parser_kwargs,
+        )
+
+    _safe_parse_json._is_defensive_patched = True  # type: ignore[attr-defined]
+    InfoExtractor._parse_json = _safe_parse_json  # type: ignore[method-assign]
+
+
+_apply_ytdlp_patches()
+
+
+
 def _parse_format_dimensions(fmt: Dict[str, Any]) -> Tuple[int, int, int]:
     """
     Extrae de forma robusta (width, height, fps) de un formato de yt-dlp,

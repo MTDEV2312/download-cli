@@ -440,6 +440,26 @@ class TestCliOptionsIntegration(unittest.TestCase):
         self.assertIn('--max-sleep-interval', result.output)
         self.assertIn('--abort-on-error', result.output)
 
+    def test_defensive_parse_json_handles_preparsed_dict_and_list(self):
+        """Verifica que el parche defensivo de InfoExtractor._parse_json soporte dict/list ya parseados (ej. ok.ru) y strings JSON normales."""
+        import yt_dlp
+        from yt_dlp.extractor.common import InfoExtractor
+        from core.extractor import _apply_ytdlp_patches
+
+        _apply_ytdlp_patches()
+        ydl = yt_dlp.YoutubeDL({'quiet': True})
+        ie = InfoExtractor(ydl)
+
+        pre_parsed_dict = {'movie': {'title': 'Video OK.ru', 'duration': 120}, 'videos': []}
+        self.assertIs(ie._parse_json(pre_parsed_dict, '5610368862954'), pre_parsed_dict)
+
+        pre_parsed_list = [{'url': 'https://example.com/v.mp4'}]
+        self.assertIs(ie._parse_json(pre_parsed_list, '5610368862954'), pre_parsed_list)
+
+        parsed_from_str = ie._parse_json('{"movie": {"title": "From String"}}', '5610368862954')
+        self.assertEqual(parsed_from_str, {'movie': {'title': 'From String'}})
+
 
 if __name__ == '__main__':
     unittest.main()
+
