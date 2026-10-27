@@ -177,6 +177,19 @@ def handle_download_error(e: Exception, context_url: str = "", console_instance:
             console_instance=c
         )
 
+    # 7b. Kick: Cloudflare 403, contenido +18 o VOD sub-only
+    elif platform_type == PlatformType.KICK or "kick.com" in err_lower:
+        print_error(
+            "Restricción de acceso en Kick (Cloudflare / +18 / VOD no disponible)",
+            "Kick requiere sesión con cookies activas (session_token), superación de Cloudflare antibot, o el canal no está transmitiendo en vivo actualmente.\n\n"
+            "💡 [bold cyan]Soluciones recomendadas:[/bold cyan]\n"
+            "  1. Exporta tus cookies de kick.com con tu sesión iniciada a [bold white]cookies/cookies_kick.txt[/bold white] o [bold white]cookies/cookies.txt[/bold white].\n"
+            "  2. Usa cookies de tu navegador: [bold white]--cookies-from firefox[/bold white] (o chrome, edge, brave).\n"
+            "  3. Si es una transmisión en vivo, confirma que el streamer esté emitiendo en directo.\n"
+            "  4. Actualiza yt-dlp: [bold white]pip install --upgrade yt-dlp[/bold white]",
+            console_instance=c
+        )
+
     # 8. YouTube: 403 Forbidden, desafíos antibot / poToken
     elif platform_type == PlatformType.YOUTUBE or "youtube" in err_lower or "youtu.be" in err_lower:
         print_error(

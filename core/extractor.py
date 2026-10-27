@@ -34,37 +34,143 @@ def _apply_ytdlp_patches() -> None:
     Aplica parches defensivos de compatibilidad sobre yt-dlp:
     - En sitios como ok.ru (Odnoklassniki), ciertos campos anidados (ej. flashvars['metadata'])
       pueden venir ya deserializados como dict/list en lugar de str, disparando TypeError en json.loads().
+    - En Kick (kick.com), yt-dlp KickVODIE invoca 'api/v1/video/{id}' que fue deprecado por Kick (retorna 404).
+      Se parchea KickVODIE para extraer directamente el stream HLS master ('recording_url')
+      y metadatos desde el HTML server-side renderizado de Next.js.
     """
     from yt_dlp.extractor.common import InfoExtractor
 
-    if getattr(InfoExtractor._parse_json, "_is_defensive_patched", False):
-        return
+    if not getattr(InfoExtractor._parse_json, "_is_defensive_patched", False):
+        original_parse_json = InfoExtractor._parse_json
 
-    original_parse_json = InfoExtractor._parse_json
-
-    def _safe_parse_json(
-        self,
-        json_string,
-        video_id,
-        transform_source=None,
-        fatal=True,
-        errnote=None,
-        **parser_kwargs,
-    ):
-        if isinstance(json_string, (dict, list)):
-            return json_string
-        return original_parse_json(
+        def _safe_parse_json(
             self,
             json_string,
             video_id,
-            transform_source=transform_source,
-            fatal=fatal,
-            errnote=errnote,
+            transform_source=None,
+            fatal=True,
+            errnote=None,
             **parser_kwargs,
-        )
+        ):
+            if isinstance(json_string, (dict, list)):
+                return json_string
+            return original_parse_json(
+                self,
+                json_string,
+                video_id,
+                transform_source=transform_source,
+                fatal=fatal,
+                errnote=errnote,
+                **parser_kwargs,
+            )
 
-    _safe_parse_json._is_defensive_patched = True  # type: ignore[attr-defined]
-    InfoExtractor._parse_json = _safe_parse_json  # type: ignore[method-assign]
+        _safe_parse_json._is_defensive_patched = True  # type: ignore[attr-defined]
+        InfoExtractor._parse_json = _safe_parse_json  # type: ignore[method-assign]
+
+    try:
+        from yt_dlp.extractor.kick import KickVODIE
+        from yt_dlp.utils import ExtractorError, unified_timestamp
+
+        if not getattr(KickVODIE, "_is_defensive_patched", False):
+            orig_kick_vod_extract = KickVODIE._real_extract
+
+            def _defensive_kick_vod_extract(self, url: str) -> Dict[str, Any]:
+                video_id = self._match_id(url)
+
+                # Descargar la página renderizada por el servidor Next.js de Kick
+                webpage = self._download_webpage(url, video_id, note='Downloading Kick VOD webpage', fatal=False)
+                if not webpage:
+                    return orig_kick_vod_extract(self, url)
+
+                # Extraer la URL del stream maestro HLS (AWS IVS)
+                rec_match = re.search(r'recording_url["\\]*:\s*["\\]*(https?://[^\s"\'\\]+\.m3u8[^\s"\'\\]*)', webpage)
+                stream_url = rec_match.group(1).replace(r'\/', '/') if rec_match else None
+
+                is_sub_only = bool(re.search(r'status["\\]*:\s*["\\]*sub_only["\\]*', webpage))
+                if not stream_url:
+                    if is_sub_only:
+                        raise ExtractorError(
+                            f'El VOD {video_id} en Kick es exclusivo para suscriptores (sub_only). '
+                            'Se requiere una sesión con suscripción activa al canal en cookies/cookies_kick.txt.',
+                            expected=True
+                        )
+                    return orig_kick_vod_extract(self, url)
+
+                formats = self._extract_m3u8_formats(stream_url, video_id, 'mp4')
+
+                # Título
+                title = None
+                og_title_m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', webpage)
+                if og_title_m:
+                    title = og_title_m.group(1)
+                else:
+                    title_tag_m = re.search(r'<title>([^<]+)</title>', webpage)
+                    if title_tag_m:
+                        title = title_tag_m.group(1)
+                if title:
+                    title = re.sub(r'\s*-\s*[\w-]+\s+VOD\s+on\s+KICK\s*$', '', title, flags=re.IGNORECASE).strip()
+                if not title:
+                    title = f'Kick VOD {video_id}'
+
+                # Descripción
+                desc = None
+                og_desc_m = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']', webpage)
+                if og_desc_m:
+                    desc = og_desc_m.group(1)
+
+                # Miniatura
+                thumbnail = None
+                og_img_m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', webpage)
+                if og_img_m:
+                    thumbnail = og_img_m.group(1)
+
+                # Creador / Canal
+                uploader = None
+                uploader_m = re.search(r'channel["\\]*:\s*\{[^}]*username["\\]*:\s*["\\]*([^"\\\\]+)', webpage)
+                if uploader_m:
+                    uploader = uploader_m.group(1)
+                else:
+                    url_m = re.search(r'kick\.com/([\w-]+)/videos/', url)
+                    if url_m:
+                        uploader = url_m.group(1)
+
+                channel_id = None
+                chan_id_m = re.search(r'channel["\\]*:\s*\{[^}]*id["\\]*:\s*([0-9]+)', webpage)
+                if chan_id_m:
+                    channel_id = chan_id_m.group(1)
+
+                # Duración
+                duration = None
+                dur_m = re.search(r'["\\]*duration["\\]*:\s*([0-9]+)\s*,\s*["\\]*end_time', webpage)
+                if dur_m:
+                    val = int(dur_m.group(1))
+                    duration = val if val < 100000 else val / 1000.0
+
+                # Timestamp de emisión
+                timestamp = None
+                start_time_m = re.search(r'start_time["\\]*:\s*["\\]*([^"\\\\]+)', webpage)
+                if start_time_m:
+                    timestamp = unified_timestamp(start_time_m.group(1))
+
+                return {
+                    'id': video_id,
+                    'title': title,
+                    'description': desc,
+                    'uploader': uploader,
+                    'channel': uploader,
+                    'uploader_id': channel_id,
+                    'channel_id': channel_id,
+                    'thumbnail': thumbnail,
+                    'duration': duration,
+                    'timestamp': timestamp,
+                    'formats': formats,
+                }
+
+            _defensive_kick_vod_extract._is_defensive_patched = True  # type: ignore[attr-defined]
+            KickVODIE._real_extract = _defensive_kick_vod_extract  # type: ignore[method-assign]
+            KickVODIE._is_defensive_patched = True  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 _apply_ytdlp_patches()
@@ -116,7 +222,8 @@ def extract_info_with_client_fallback(
     url: str,
     base_ydl_opts: Dict[str, Any],
     candidate_clients: Optional[List[str]] = None,
-    console_instance: Optional[Console] = None
+    console_instance: Optional[Console] = None,
+    suppress_error_log: bool = False
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Intenta la extracción de metadatos iterando a través de clientes de reproducción candidatos
@@ -131,7 +238,8 @@ def extract_info_with_client_fallback(
             with yt_dlp.YoutubeDL(base_ydl_opts) as ydl:
                 return (ydl.extract_info(url, download=False), None)
         except Exception as e:
-            handle_download_error(e, url, console_instance=c)
+            if not suppress_error_log:
+                handle_download_error(e, url, console_instance=c)
             return (None, None)
 
     clients = list(candidate_clients or FALLBACK_PLAYER_CLIENTS)
@@ -165,7 +273,7 @@ def extract_info_with_client_fallback(
                 # Todos los clientes candidatos agotados
                 break
 
-    if last_error:
+    if last_error and not suppress_error_log:
         handle_download_error(last_error, url, console_instance=c)
     return (None, None)
 
@@ -179,7 +287,11 @@ def get_raw_info(
     default_cookies_file: Optional[str] = None,
     console_instance: Optional[Console] = None
 ) -> Optional[Dict[str, Any]]:
-    """Obtiene la información cruda completa de yt-dlp sin descargar para cualquier plataforma con rotación de clientes"""
+    """
+    Obtiene la información cruda completa de yt-dlp sin descargar para cualquier plataforma.
+    Implementa estrategia de 2 fases: primero intenta sin cookies; si falla, reintenta con cookies.
+    """
+    c = console_instance or console
     try:
         platform_type, _, _ = detect_platform(url)
         logger = YtDlpQuietLogger()
@@ -190,7 +302,7 @@ def get_raw_info(
         elif platform_type == PlatformType.TIKTOK:
             extractor_args['tiktok'] = {'app_version': 'latest'}
 
-        ydl_opts: Dict[str, Any] = {
+        base_ydl_opts: Dict[str, Any] = {
             'quiet': True,
             'noplaylist': True,
             'no_warnings': True,
@@ -198,8 +310,20 @@ def get_raw_info(
             'extractor_args': extractor_args,
         }
         if js_runtimes and platform_type == PlatformType.YOUTUBE:
-            ydl_opts['js_runtimes'] = js_runtimes
-            
+            base_ydl_opts['js_runtimes'] = js_runtimes
+
+        # Fase 1: Intento sin cookies (sesión limpia)
+        info_clean, _ = extract_info_with_client_fallback(
+            url,
+            base_ydl_opts=base_ydl_opts,
+            console_instance=c,
+            suppress_error_log=True
+        )
+        if info_clean is not None:
+            info_clean['_used_cookies'] = False
+            return info_clean
+
+        # Fase 2: Si falló sin cookies, resolver si hay cookies disponibles para fallback
         cookie_opts = get_cookie_opts(
             url=url,
             cookies_from=cookies_from,
@@ -207,16 +331,33 @@ def get_raw_info(
             default_cookies_from=default_cookies_from,
             default_cookies_file=default_cookies_file
         )
-        ydl_opts.update(cookie_opts)
 
-        info, _ = extract_info_with_client_fallback(
+        if cookie_opts:
+            c.print("[dim cyan]ℹ️ Extracción sin cookies falló o requiere sesión. Reintentando con cookies...[/dim cyan]")
+            ydl_opts_cookies = dict(base_ydl_opts)
+            ydl_opts_cookies.update(cookie_opts)
+            info_cookies, _ = extract_info_with_client_fallback(
+                url,
+                base_ydl_opts=ydl_opts_cookies,
+                console_instance=c,
+                suppress_error_log=False
+            )
+            if info_cookies is not None:
+                info_cookies['_used_cookies'] = True
+                info_cookies['_cookie_opts'] = cookie_opts
+                return info_cookies
+            return None
+
+        # Si no había cookies disponibles, reejecutar Fase 1 para emitir diagnóstico visual de error
+        extract_info_with_client_fallback(
             url,
-            base_ydl_opts=ydl_opts,
-            console_instance=console_instance
+            base_ydl_opts=base_ydl_opts,
+            console_instance=c,
+            suppress_error_log=False
         )
-        return info
+        return None
     except Exception as e:
-        handle_download_error(e, url, console_instance=console_instance)
+        handle_download_error(e, url, console_instance=c)
         return None
 
 

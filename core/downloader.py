@@ -175,6 +175,15 @@ class UniversalDownloader:
             ids.add(v_id)
             ids.add(f"v{v_id}")
 
+        # Kick: /videos/<uuid> o ?clip=<clip_id> o /clips/<clip_id>
+        m_kick_vod = re.search(r'kick\.com/(?:[\w-]+/videos/|video/)([\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12})', clean_url, re.IGNORECASE)
+        if m_kick_vod:
+            ids.add(m_kick_vod.group(1))
+
+        m_kick_clip = re.search(r'kick\.com/[\w-]+(?:/clips/|/?\?(?:[^#]+&)?clip=)(clip_[\w-]+)', clean_url, re.IGNORECASE)
+        if m_kick_clip:
+            ids.add(m_kick_clip.group(1))
+
         # Último segmento alfanumérico del path si parece un ID
         try:
             from urllib.parse import urlparse
@@ -495,19 +504,23 @@ class UniversalDownloader:
                             'format': 'srt'
                         })
 
-            # Cookies
-            cookie_opts = self._get_cookie_opts(url=url, cookies_from=cookies_from, cookies_file=cookies_file)
-            ydl_opts.update(cookie_opts)
+            # Cookies: si info_dict ya fue autenticado previamente, reutilizar sus cookies
+            using_cookies = False
+            if info_dict and info_dict.get('_used_cookies') and info_dict.get('_cookie_opts'):
+                ydl_opts.update(info_dict['_cookie_opts'])
+                using_cookies = True
             
             # Reutilizar info_dict si ya fue obtenido en el selector interactivo o extraer con fallback
             info = info_dict
             active_client = None
             if info is None:
+                # Fase 1: Intento sin cookies
                 with self.console.status(f"[bold cyan]📥 Obteniendo información de {platform_name}...", spinner="dots"):
                     info, active_client = extract_info_with_client_fallback(
                         url,
-                        base_ydl_opts=ydl_opts,
-                        console_instance=self.console
+                        base_ydl_opts=dict(ydl_opts),
+                        console_instance=self.console,
+                        suppress_error_log=True
                     )
             
             if info is None:
@@ -520,7 +533,30 @@ class UniversalDownloader:
                     )
                     return True
 
-                # Si no está en el archive, es un fallo real de extracción de metadatos
+                # Fase 2: Si falló sin cookies, reintentar con cookies si están disponibles
+                if not using_cookies:
+                    cookie_opts = self._get_cookie_opts(url=url, cookies_from=cookies_from, cookies_file=cookies_file)
+                    if cookie_opts:
+                        self.console.print("[dim cyan]ℹ️ Extracción sin cookies falló o requiere sesión. Reintentando con cookies...[/dim cyan]")
+                        ydl_opts.update(cookie_opts)
+                        using_cookies = True
+                        with self.console.status(f"[bold cyan]📥 Obteniendo información autenticada de {platform_name}...", spinner="dots"):
+                            info, active_client = extract_info_with_client_fallback(
+                                url,
+                                base_ydl_opts=dict(ydl_opts),
+                                console_instance=self.console,
+                                suppress_error_log=False
+                            )
+
+            if info is None:
+                # Si no se recuperó ni con cookies, emitir diagnóstico final
+                if not using_cookies:
+                    extract_info_with_client_fallback(
+                        url,
+                        base_ydl_opts=ydl_opts,
+                        console_instance=self.console,
+                        suppress_error_log=False
+                    )
                 return False
 
             video_entry = info['entries'][0] if 'entries' in info and info['entries'] else info
@@ -583,6 +619,29 @@ class UniversalDownloader:
                                 video_entry = info['entries'][0] if 'entries' in info and info['entries'] else info
                         continue
                     else:
+                        if not using_cookies:
+                            cookie_opts = self._get_cookie_opts(url=url, cookies_from=cookies_from, cookies_file=cookies_file)
+                            if cookie_opts:
+                                self.console.print("[dim cyan]ℹ️ Descarga de stream sin cookies rechazada. Reintentando con sesión de cookies...[/dim cyan]")
+                                ydl_opts.update(cookie_opts)
+                                using_cookies = True
+                                try:
+                                    with yt_dlp.YoutubeDL(ydl_opts) as ydl_auth_refresh:
+                                        refreshed_info = ydl_auth_refresh.extract_info(url, download=False)
+                                        if refreshed_info:
+                                            info = refreshed_info
+                                            video_entry = info['entries'][0] if 'entries' in info and info['entries'] else info
+                                    with progress_manager.progress:
+                                        with yt_dlp.YoutubeDL(ydl_opts) as ydl_auth_dl:
+                                            ydl_auth_dl.process_ie_result(info, download=True)
+                                            filename = ydl_auth_dl.prepare_filename(video_entry)
+                                            if audio_only:
+                                                audio_ext = 'm4a' if audio_format.lower() == 'aac' else audio_format.lower()
+                                                filename = str(Path(filename).with_suffix(f'.{audio_ext}'))
+                                    download_done = True
+                                    break
+                                except Exception as auth_stream_err:
+                                    raise auth_stream_err
                         raise stream_err
 
             if not download_done:
@@ -672,13 +731,30 @@ class UniversalDownloader:
             }
             if self.js_runtimes and platform_type == PlatformType.YOUTUBE:
                 flat_opts['js_runtimes'] = self.js_runtimes
-                
-            cookie_opts = self._get_cookie_opts(url=url, cookies_from=cookies_from, cookies_file=cookies_file)
-            flat_opts.update(cookie_opts)
-            
-            with self.console.status(f"[bold cyan]📥 Obteniendo información de la lista de {platform_name}...", spinner="dots"):
-                with yt_dlp.YoutubeDL(flat_opts) as ydl:
-                    playlist_info = ydl.extract_info(url, download=False)
+
+            # Fase 1: Extracción plana de la lista sin cookies
+            flat_info = None
+            try:
+                with self.console.status(f"[bold cyan]📥 Obteniendo información de la lista de {platform_name}...", spinner="dots"):
+                    with yt_dlp.YoutubeDL(flat_opts) as ydl:
+                        flat_info = ydl.extract_info(url, download=False)
+            except Exception:
+                flat_info = None
+
+            # Fase 2: Si falló sin cookies, reintentar con cookies si están disponibles
+            if not flat_info:
+                cookie_opts = self._get_cookie_opts(url=url, cookies_from=cookies_from, cookies_file=cookies_file)
+                if cookie_opts:
+                    self.console.print(f"[dim cyan]ℹ️ Lista no accesible sin cookies. Reintentando con sesión de cookies...[/dim cyan]")
+                    flat_opts.update(cookie_opts)
+                    try:
+                        with self.console.status(f"[bold cyan]📥 Obteniendo información autenticada de la lista de {platform_name}...", spinner="dots"):
+                            with yt_dlp.YoutubeDL(flat_opts) as ydl:
+                                flat_info = ydl.extract_info(url, download=False)
+                    except Exception:
+                        flat_info = None
+
+            playlist_info = flat_info
             
             if not playlist_info:
                 print_error(
@@ -751,10 +827,11 @@ class UniversalDownloader:
                 item_reason = ""
                 start_item_time = time.time()
 
-                # Estado de rotación de cliente y cookies para este elemento
+                # Estado de rotación de cliente y cookies para este elemento (empieza sin cookies)
                 curr_client = None
-                curr_cookies_from = cookies_from
-                curr_cookies_file = cookies_file
+                curr_cookies_from = None
+                curr_cookies_file = None
+                using_item_cookies = False
                 client_candidates = list(FALLBACK_PLAYER_CLIENTS) if platform_type == PlatformType.YOUTUBE else [None]
                 client_idx = 0
 
@@ -818,13 +895,14 @@ class UniversalDownloader:
                                     'format': 'srt'
                                 })
 
-                    # Configurar cookies
-                    item_cookie_opts = self._get_cookie_opts(
-                        url=item_url,
-                        cookies_from=curr_cookies_from,
-                        cookies_file=curr_cookies_file
-                    )
-                    item_ydl_opts.update(item_cookie_opts)
+                    # Configurar cookies si se activaron para este elemento
+                    if using_item_cookies:
+                        item_cookie_opts = self._get_cookie_opts(
+                            url=item_url,
+                            cookies_from=curr_cookies_from or cookies_from,
+                            cookies_file=curr_cookies_file or cookies_file
+                        )
+                        item_ydl_opts.update(item_cookie_opts)
 
                     # Configurar cliente rotativo si aplica
                     if curr_client and platform_type == PlatformType.YOUTUBE:
@@ -844,6 +922,20 @@ class UniversalDownloader:
                         err_str = str(ex)
                         err_lower = err_str.lower()
                         item_reason = err_str
+
+                        # Si falló sin cookies, reintentar activando cookies si existen
+                        if not using_item_cookies:
+                            cand_cookies = self._get_cookie_opts(
+                                url=item_url,
+                                cookies_from=cookies_from,
+                                cookies_file=cookies_file
+                            )
+                            if cand_cookies:
+                                using_item_cookies = True
+                                curr_cookies_from = cookies_from
+                                curr_cookies_file = cookies_file
+                                self.console.print(f"[dim cyan]ℹ️ Elemento #{item_num} sin cookies falló o requiere sesión. Reintentando con cookies...[/dim cyan]")
+                                continue
 
                         is_403_or_bot = "403" in err_str or "forbidden" in err_lower or any(
                             k in err_lower for k in ("bot", "sign in", "confirm you", "n challenge", "potoken", "po_token", "rate-limit", "rate limit", "429")
@@ -1121,18 +1213,30 @@ class UniversalDownloader:
                                 'format': 'srt'
                             })
 
-                cookie_opts = self._get_cookie_opts(url=url, cookies_from=cookies_from, cookies_file=cookies_file)
-                ydl_opts.update(cookie_opts)
-
                 success = False
                 err_msg = ""
                 try:
+                    # Fase 1: Descargar sin cookies
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
                     success = True
                 except Exception as ex:
-                    success = False
-                    err_msg = str(ex)
+                    # Fase 2: Si falló sin cookies, intentar con sesión de cookies si están disponibles
+                    batch_cookie_opts = self._get_cookie_opts(url=url, cookies_from=cookies_from, cookies_file=cookies_file)
+                    if batch_cookie_opts:
+                        ydl_opts_auth = dict(ydl_opts)
+                        ydl_opts_auth.update(batch_cookie_opts)
+                        try:
+                            with yt_dlp.YoutubeDL(ydl_opts_auth) as ydl_auth:
+                                ydl_auth.download([url])
+                            success = True
+                            err_msg = ""
+                        except Exception as ex_auth:
+                            success = False
+                            err_msg = str(ex_auth)
+                    else:
+                        success = False
+                        err_msg = str(ex)
                 finally:
                     cleanup()
                     with completed_lock:

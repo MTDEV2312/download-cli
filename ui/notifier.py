@@ -65,6 +65,7 @@ def get_notification_title(
             PlatformType.BANDCAMP: "🎸 Bandcamp Álbum Completado",
             PlatformType.VIMEO: "🔷 Vimeo Canal/Lista Completada",
             PlatformType.FACEBOOK: "🔵 Facebook Lista Completada",
+            PlatformType.KICK: "🟢 Kick Colección/Canal Completado",
         }
         return playlist_titles.get(ptype, f"📋 Lista de {pname} Completada")
 

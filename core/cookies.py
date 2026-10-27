@@ -47,6 +47,7 @@ PLATFORM_COOKIE_DOMAINS: Dict[PlatformType, Tuple[str, List[str]]] = {
     PlatformType.SOUNDCLOUD: ("SoundCloud", ["soundcloud.com"]),
     PlatformType.BANDCAMP: ("Bandcamp", ["bandcamp.com"]),
     PlatformType.VIMEO: ("Vimeo", ["vimeo.com"]),
+    PlatformType.KICK: ("Kick", ["kick.com"]),
 }
 
 # Nombres de archivos de cookies estándar asociados a cada plataforma
@@ -74,12 +75,19 @@ AUDIT_COOKIE_TARGETS: List[Tuple[str, str, Optional[PlatformType]]] = [
     ("cookies_twitter.txt", "🐦 Twitter / X", PlatformType.TWITTER),
     ("cookies_x.txt", "🐦 X (Twitter)", PlatformType.TWITTER),
     ("cookies_twitch.txt", "🟣 Twitch", PlatformType.TWITCH),
+    ("cookies_kick.txt", "🟢 Kick", PlatformType.KICK),
     ("cookies_facebook.txt", "🔵 Facebook", PlatformType.FACEBOOK),
     ("cookies_reddit.txt", "🟠 Reddit", PlatformType.REDDIT),
 ]
 
 # Configuración de dominios relevantes y tokens clave de autenticación e invitado por plataforma
 PLATFORM_AUTH_TOKENS: Dict[PlatformType, Dict[str, Any]] = {
+    PlatformType.KICK: {
+        'domains': ['kick.com'],
+        'auth_tokens': {'session_token', 'kick_session'},
+        'guest_tokens': {'xsrf-token', 'cf_clearance', '__cf_bm', '_cfuvid'},
+        'auth_label': 'session_token',
+    },
     PlatformType.TWITTER: {
         'domains': ['twitter.com', 'x.com', 't.co'],
         'auth_tokens': {'auth_token'},
@@ -791,6 +799,7 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
         "• 🐦 [bold blue]Twitter / X:[/bold blue] Necesario para acceder a tweets con contenido sensible (NSFW), cuentas protegidas o evitar límites de tasa (rate limits).\n"
         "• 🎵 [bold cyan]TikTok:[/bold cyan] Recomendado para colecciones privadas, videos guardados o evitar desafíos captcha durante descargas continuas.\n"
         "• 🟣 [bold purple]Twitch:[/bold purple] Requerido para VODs y directos exclusivos para suscriptores (sub-only).\n"
+        "• 🟢 [bold green]Kick:[/bold green] Requerido para VODs con restricción de edad (18+), directos exclusivos o superar bloqueos de Cloudflare (session_token).\n"
         "• 🔵 [bold blue]Facebook:[/bold blue] Requerido para videos en grupos cerrados o publicaciones privadas autorizadas."
     )
     c.print(Panel(consejos, title="[bold cyan]🛡️ Prevención de Bloqueos y Consejos por Plataforma[/bold cyan]", border_style="cyan", expand=False))
@@ -812,6 +821,7 @@ def check_cookies_status(console_instance: Optional[Console] = None) -> None:
         "     - [bold white]cookies/cookies_twitter.txt[/bold white] o [bold white]cookies/cookies_x.txt[/bold white] (específico para Twitter / X)\n"
         "     - [bold white]cookies/cookies_youtube.txt[/bold white] o [bold white]cookies/youtube_cookies.txt[/bold white] (específico para YouTube)\n"
         "     - [bold white]cookies/cookies_twitch.txt[/bold white] (específico para Twitch)\n"
+        "     - [bold white]cookies/cookies_kick.txt[/bold white] (específico para Kick)\n"
         "     - [bold white]cookies/cookies_facebook.txt[/bold white] (específico para Facebook)\n"
         "   • El programa las detectará y aplicará automáticamente según la URL a descargar.\n\n"
         "2. [bold white]Método Directo por Navegador (CLI):[/bold white]\n"
