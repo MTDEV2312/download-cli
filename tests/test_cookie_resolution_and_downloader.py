@@ -21,6 +21,7 @@ from rich.console import Console
 from core.cookies import (
     AUDIT_COOKIE_TARGETS,
     PLATFORM_COOKIE_FILES,
+    PLATFORM_COOKIE_DOMAINS,
     PLATFORM_AUTH_TOKENS,
     inspect_cookie_file,
     find_cookie_file,
@@ -28,8 +29,16 @@ from core.cookies import (
     check_cookies_status,
 )
 from core.downloader import UniversalDownloader
+from core.extractor import get_raw_info
 from ui.console import handle_download_error
 from utils.platform_detector import PlatformType
+
+
+SAMPLE_KICK_AUTH_COOKIES = """# Netscape HTTP Cookie File
+.kick.com	TRUE	/	TRUE	1806803394	cf_clearance	mock_cf_clearance_value
+.kick.com	TRUE	/	TRUE	1806803391	session_token	mock_session_token_value
+.kick.com	TRUE	/	TRUE	1806803392	kick_session	mock_kick_session_value
+"""
 
 
 SAMPLE_TWITTER_AUTH_COOKIES = """# Netscape HTTP Cookie File
@@ -70,6 +79,34 @@ class TestSmartCookieResolution(unittest.TestCase):
         for fname, desc, p_type in AUDIT_COOKIE_TARGETS:
             if fname == "cookies_x.txt":
                 self.assertEqual(p_type, PlatformType.TWITTER)
+
+    def test_audit_cookie_targets_and_domains_include_kick(self):
+        """Verifica que AUDIT_COOKIE_TARGETS y PLATFORM_COOKIE_DOMAINS incluyan kick.com."""
+        target_filenames = [t[0] for t in AUDIT_COOKIE_TARGETS]
+        self.assertIn("cookies_kick.txt", target_filenames)
+        for fname, desc, p_type in AUDIT_COOKIE_TARGETS:
+            if fname == "cookies_kick.txt":
+                self.assertEqual(p_type, PlatformType.KICK)
+
+        self.assertIn(PlatformType.KICK, PLATFORM_COOKIE_DOMAINS)
+        name, domains = PLATFORM_COOKIE_DOMAINS[PlatformType.KICK]
+        self.assertEqual(name, "Kick")
+        self.assertIn("kick.com", domains)
+
+    def test_inspect_cookie_file_kick_auth_token(self):
+        """Verifica que un archivo con session_token de Kick obtenga alta puntuación y has_auth=True."""
+        with tempfile.NamedTemporaryFile('w', delete=False, suffix='.txt') as f:
+            f.write(SAMPLE_KICK_AUTH_COOKIES)
+            temp_path = Path(f.name)
+
+        try:
+            res = inspect_cookie_file(temp_path, platform=PlatformType.KICK)
+            self.assertTrue(res['has_auth'])
+            self.assertIn('session_token', res['auth_tokens_found'])
+            self.assertGreaterEqual(res['score'], 1000)
+            self.assertIn("session_token", res['status_label'])
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def test_inspect_cookie_file_twitter_auth_token(self):
         """Verifica que un archivo con auth_token obtenga alta puntuación y has_auth=True."""
@@ -268,6 +305,13 @@ class TestDownloaderExtractionAndArchive(unittest.TestCase):
         ids_twitch = self.downloader._extract_possible_ids_from_url("https://www.twitch.tv/videos/2848369758")
         self.assertTrue("2848369758" in ids_twitch or "v2848369758" in ids_twitch)
 
+        # Kick
+        ids_kick_vod = self.downloader._extract_possible_ids_from_url("https://kick.com/streamer/videos/5c697a87-afce-4256-b01f-3c8fe71ef5cb")
+        self.assertIn("5c697a87-afce-4256-b01f-3c8fe71ef5cb", ids_kick_vod)
+
+        ids_kick_clip = self.downloader._extract_possible_ids_from_url("https://kick.com/streamer?clip=clip_01GYXVB5Y8PWAPWCWMSBCFB05X")
+        self.assertIn("clip_01GYXVB5Y8PWAPWCWMSBCFB05X", ids_kick_clip)
+
     def test_is_in_download_archive(self):
         """Verifica comprobación de ID en download archive."""
         with tempfile.NamedTemporaryFile('w', delete=False, suffix='.txt') as f:
@@ -332,6 +376,109 @@ class TestUIConsoleRecommendations(unittest.TestCase):
         output = test_console.file.getvalue()
         self.assertIn("cookies_x.txt", output)
         self.assertIn("cookies_twitter.txt", output)
+
+    def test_kick_error_recommends_cookies_kick(self):
+        """Verifica que ante un error en Kick se sugiera cookies_kick.txt."""
+        test_console = Console(file=StringIO(), force_terminal=False)
+        fake_err = Exception("Kick: Cloudflare verification or mature content")
+        handle_download_error(fake_err, "https://kick.com/streamer", console_instance=test_console)
+        output = test_console.file.getvalue()
+        self.assertIn("cookies_kick.txt", output)
+        self.assertIn("Kick", output)
+
+
+class TestKickVODExtraction(unittest.TestCase):
+    """Verifica el parche defensivo de KickVODIE para streams Next.js HLS (AWS IVS)."""
+
+    def test_kick_vod_patch_extracts_recording_url(self):
+        from yt_dlp.extractor.kick import KickVODIE
+        from yt_dlp.utils import ExtractorError
+
+        vod_ie = KickVODIE()
+        sample_html = (
+            '<html><head>'
+            '<meta property="og:title" content="TORNEO DE STREAMERS - streamer VOD on KICK"/>'
+            '<meta property="og:description" content="Gran final en vivo"/>'
+            '<meta property="og:image" content="https://web.kick.com/api/v1/videos/1234/thumb.jpg"/>'
+            '</head><body>'
+            '\\"channel\\":{\\"id\\":999,\\"slug\\":\\"streamer\\",\\"username\\":\\"streamer\\"},'
+            '\\"duration\\":3600,\\"end_time\\":\\"2026-10-26T00:00:00Z\\",'
+            '\\"recording_url\\":\\"https://stream.kick.com/mock/master.m3u8\\"'
+            '</body></html>'
+        )
+
+        with patch.object(vod_ie, '_download_webpage', return_value=sample_html):
+            with patch.object(vod_ie, '_extract_m3u8_formats', return_value=[{'format_id': '1080p', 'url': 'mock.m3u8'}]):
+                info = vod_ie._real_extract('https://kick.com/streamer/videos/01a175bc-8eb0-72a9-b3d3-daab1ad078f3')
+                self.assertEqual(info['id'], '01a175bc-8eb0-72a9-b3d3-daab1ad078f3')
+                self.assertEqual(info['title'], 'TORNEO DE STREAMERS')
+                self.assertEqual(info['uploader'], 'streamer')
+                self.assertEqual(info['duration'], 3600)
+                self.assertEqual(len(info['formats']), 1)
+
+    def test_kick_vod_patch_raises_sub_only_when_no_recording_url(self):
+        from yt_dlp.extractor.kick import KickVODIE
+        from yt_dlp.utils import ExtractorError
+
+        vod_ie = KickVODIE()
+        sample_html = (
+            '<html><head><title>Sub only stream</title></head><body>'
+            '\\"channel\\":{\\"id\\":999,\\"slug\\":\\"streamer\\",\\"username\\":\\"streamer\\"},'
+            '\\"duration\\":3600,\\"status\\":\\"sub_only\\"'
+            '</body></html>'
+        )
+
+        with patch.object(vod_ie, '_download_webpage', return_value=sample_html):
+            with self.assertRaises(ExtractorError) as ctx:
+                vod_ie._real_extract('https://kick.com/streamer/videos/01a175bc-8eb0-72a9-b3d3-daab1ad078f3')
+            self.assertIn("sub_only", str(ctx.exception))
+            self.assertIn("cookies/cookies_kick.txt", str(ctx.exception))
+
+
+class TestCookielessFirstStrategy(unittest.TestCase):
+    """Verifica que todas las descargas intenten primero sin cookies y usen cookies solo como fallback."""
+
+    def test_get_raw_info_tries_clean_first_then_cookie_fallback(self):
+        """get_raw_info primero intenta sin cookies; si falla, reintenta con cookies."""
+        url = "https://kick.com/streamer/videos/12345"
+        mock_info = {'title': 'Kick VOD', 'id': '12345', 'entries': []}
+
+        # Simular: intento 1 (sin cookies) -> (None, None); intento 2 (con cookies) -> (mock_info, None)
+        with patch('core.extractor.extract_info_with_client_fallback', side_effect=[(None, None), (mock_info, None)]) as mock_extract:
+            with patch('core.extractor.get_cookie_opts', return_value={'cookiefile': 'cookies/cookies_kick.txt'}):
+                info = get_raw_info(url)
+                self.assertIsNotNone(info)
+                self.assertTrue(info.get('_used_cookies'))
+                self.assertEqual(mock_extract.call_count, 2)
+                # La primera llamada debió ser sin cookiefile
+                first_opts = mock_extract.call_args_list[0][1]['base_ydl_opts']
+                self.assertNotIn('cookiefile', first_opts)
+                # La segunda llamada debió incluir cookiefile
+                second_opts = mock_extract.call_args_list[1][1]['base_ydl_opts']
+                self.assertIn('cookiefile', second_opts)
+
+    def test_download_video_tries_clean_first_then_cookie_fallback(self):
+        """download_video primero intenta sin cookies; si falla, reintenta con cookies."""
+        url = "https://www.youtube.com/watch?v=mock123"
+        downloader = UniversalDownloader(output_path="Descargas_Test")
+        mock_info = {
+            'id': 'mock123',
+            'title': 'Test Video',
+            'duration': 60,
+            'entries': [{'id': 'mock123', 'title': 'Test Video', 'duration': 60}],
+            'formats': [{'format_id': '18', 'ext': 'mp4'}]
+        }
+
+        with patch('core.downloader.extract_info_with_client_fallback', side_effect=[(None, None), (mock_info, 'ios')]) as mock_extract:
+            with patch.object(downloader, '_get_cookie_opts', return_value={'cookiefile': 'cookies/cookies_youtube.txt'}):
+                with patch('yt_dlp.YoutubeDL'):
+                    success = downloader.download_video(url, use_archive=False, notify=False)
+                    self.assertTrue(success)
+                    self.assertEqual(mock_extract.call_count, 2)
+                    first_opts = mock_extract.call_args_list[0][1]['base_ydl_opts']
+                    self.assertNotIn('cookiefile', first_opts)
+                    second_opts = mock_extract.call_args_list[1][1]['base_ydl_opts']
+                    self.assertIn('cookiefile', second_opts)
 
 
 if __name__ == '__main__':
