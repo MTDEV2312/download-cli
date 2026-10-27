@@ -153,6 +153,7 @@ Para acceder a videos restringidos por edad, publicaciones privadas autorizadas 
      - `cookies/cookies_tiktok.txt` (TikTok)
      - `cookies/cookies_twitter.txt` (Twitter / X)
      - `cookies/cookies_twitch.txt` (Twitch)
+     - `cookies/cookies_kick.txt` (Kick)
      - `cookies/cookies_facebook.txt` (Facebook)
    - El sistema detecta y aplica automáticamente las cookies correspondientes según el dominio del enlace a descargar.
 

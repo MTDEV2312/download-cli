@@ -65,10 +65,10 @@ cls
 echo ========================================================
 echo        Universal Video and Audio Downloader CLI
 echo      YouTube - TikTok - Instagram - Twitter - Twitch
-echo      SoundCloud - Bandcamp - Vimeo - HLS/DASH (1800+)
+echo      SoundCloud - Bandcamp - Vimeo - Kick (1800+)
 echo ========================================================
 echo.
-echo 1.  Descargar Video Universal (YouTube, TikTok, Instagram, Twitter/X, Twitch, etc.)
+echo 1.  Descargar Video Universal (YouTube, TikTok, Instagram, Twitter/X, Twitch, Kick, etc.)
 echo 2.  Descargar Audio de Alta Fidelidad (MP3, FLAC, M4A, OPUS, WAV)
 echo 3.  Selector Interactivo de Formatos y Resoluciones (-i)
 echo 4.  Descargar Lista de Reproduccion, Perfil o Album
